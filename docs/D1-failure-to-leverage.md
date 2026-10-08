@@ -581,6 +581,7 @@ suite. All re-verified after the change.
 - `test_cloud_moonshot.CrossSourceReplication.test_a_field_the_other_source_rejects_is_not_shipped`
 - `test_cloud_moonshot.CrossSourceReplication.test_a_field_that_holds_on_neither_source_is_not_named`
 - `test_cloud_moonshot.TheProbeRule.test_the_replay_runner_reports_its_hypothetical_rule_as_a_probe`
+- `test_cloud_moonshot.TheProbeRule.test_a_probe_that_cannot_fire_says_what_the_field_actually_spans`
 - `test_cloud_moonshot.TheAcceptanceListOnACleanRun.test_a07_passes_when_sufficiency_was_scanned_and_found_no_gap`
 - `test_cloud_moonshot.TheMoonshotScript.test_the_synthetic_run_answers_its_own_question`
 - `test_cloud_moonshot.TheMoonshotScript.test_real_data_without_a_named_outcome_is_unusable`
@@ -613,7 +614,9 @@ comparison to be *meaningless* without the exclusion, so the control is load-bea
   bind `threshold=24`; `idle_hours` never reaches 24 on the cloud holdout, so the
   probes record `EXPERIMENT_NOT_RUN` and produce no evidence. `test_with_declared_roles_the_same_experiments_run`
   asserts the only unrunnable tests are those declared probes, rather than asserting
-  that none may exist. Q14 reports the same fact as a planning defect.
+  that none may exist. Q14 reports the same fact as a planning defect, and the reason
+  now names the field's actual range so the defect is diagnosable (closing the entry's
+  own next question one step; see below).
 
 ## new question (the compiler's real output)
 
@@ -627,10 +630,20 @@ comparison to be *meaningless* without the exclusion, so the control is load-bea
 That question did not exist before this failure. It is the boundary between a probe
 and a fit, and it is not obvious which side keeps the engine honest.
 
+It is answered one step in, without deciding the boundary: a probe that cannot fire
+now reports the range the field actually spans ("idle_hours ranges 0 to 20 over 400
+valued row(s), so the declared threshold is outside the data"). That is **diagnosis,
+not a fit** -- the probe still replays the threshold it was given and never chooses
+one from the data -- but it makes the planning defect actionable and its own next
+question ("what threshold does this data support?") answerable from the record. The
+open half -- may a probe *sweep* candidate thresholds and report which it replayed?
+-- remains the boundary the entry names.
+
 ## stopping condition
 
 No currently identified influential unknown remains untested at this boundary, and
-the next question is recorded above. Closed at `LEVERAGE_CAPTURED`.
+the next question is recorded above (with its first step answered below the line).
+Closed at `LEVERAGE_CAPTURED`.
 
 ---
 

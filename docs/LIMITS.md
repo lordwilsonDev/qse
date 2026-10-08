@@ -284,6 +284,11 @@ Two further honest limits the cloud run exposes:
   `counterfactual_replay` and binds `threshold=24` before seeing any data. `idle_hours`
   never reaches 24 on the holdout, so two planned probes record `EXPERIMENT_NOT_RUN`
   and produce no evidence. This is a fact about the plan, not the data; Q14 flags it.
+  The not-run reason now names the range the field actually spans ("ranges 0 to 20
+  over 400 valued row(s)"), so the defect is diagnosable and the engine's own next
+  question -- *what threshold does this data support?* -- is answerable from the
+  record. The probe still replays the threshold it was given and never chooses one
+  from the data: reporting a range is diagnosis, not a fit.
 - **The cross-source requirement can reject the truth.** A field that genuinely holds
   on only one period is rejected, because there is no other period to confirm it. The
   control prefers a field two sources agree on, which is the right default and is not

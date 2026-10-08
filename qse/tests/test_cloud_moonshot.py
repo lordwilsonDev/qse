@@ -250,6 +250,27 @@ class TheProbeRule(unittest.TestCase):
         self.assertNotIn("rule", observed,
                          "the key the builder reads as a measured rule must not carry a probe")
 
+    def test_a_probe_that_cannot_fire_says_what_the_field_actually_spans(self):
+        # A declared threshold outside the data's range is a planning defect. The probe
+        # must not go looking for a threshold that works (that would be a fit); it must
+        # say what the data does span, so the defect is diagnosable and the engine's own
+        # next question -- "what threshold does this data support?" -- is answerable.
+        item = make_experiment(
+            hypothesis="HYP-1", question=scenario.QUESTION,
+            design="counterfactual replay at a threshold the data does not reach",
+            prediction_if_true="t", prediction_if_false="f", refuted_by="r",
+            runner="counterfactual_replay", discriminates=("HYP-1",),
+            required_data=("field=idle_hours", "op=>=", "threshold=999",
+                           "outcome=over_budget"),
+        )
+        result = runner.run(item, Dataset(name="cloud-fit", rows=scenario.fit_rows()))
+        self.assertFalse(result["ran"])
+        self.assertIn("ranges", result["reason"], result["reason"])
+        top = max(row["idle_hours"] for row in scenario.fit_rows()
+                  if row.get("idle_hours") is not None)
+        self.assertIn(f"{top:g}", result["reason"],
+                      "the reason names the range, so the next question can be answered")
+
     def test_a_planned_threshold_never_becomes_the_artifacts_detector(self):
         # the shipped rule on the cloud fixture must come from the scan, not from the
         # planner's data-blind `threshold=24`

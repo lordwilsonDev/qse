@@ -655,16 +655,30 @@ def counterfactual_replay(experiment: Experiment, dataset: Dataset) -> dict:
 
     fired: list[int] = []
     quiet: list[int] = []
+    # Every numeric value of the field, even on rows whose outcome is unreadable, so a
+    # probe that cannot fire can say what the field actually spans. That is diagnosis,
+    # not a fit: the probe still replays the threshold it was given and never chooses
+    # one from the data -- it only reports the range the data did not reach.
+    values: list[float] = []
     for row in dataset.rows:
         value, flag = _number(row.get(field_column)), _flag(row.get(outcome))
-        if value is None or flag is None:
+        if value is None:
+            continue
+        values.append(value)
+        if flag is None:
             continue
         hit = value >= threshold if operation == ">=" else value <= threshold
         (fired if hit else quiet).append(flag)
     if not fired or not quiet:
+        if values:
+            span = (f", but {field_column} ranges {min(values):g} to {max(values):g} over "
+                    f"{len(values)} valued row(s), so the declared threshold is outside "
+                    "the data the probe was replayed on")
+        else:
+            span = f"; {field_column} has no numeric values on this source at all"
         raise NeedsColumns(
             f"needs rows on both sides of {field_column} {operation} {threshold}; "
-            f"got {len(fired)} flagged and {len(quiet)} not"
+            f"got {len(fired)} flagged and {len(quiet)} not{span}"
         )
 
     rate_fired = sum(fired) / len(fired)
