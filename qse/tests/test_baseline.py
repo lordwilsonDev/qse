@@ -182,6 +182,64 @@ class TheShippedFixture(unittest.TestCase):
                             f"{decoy} should collapse out of sample")
 
 
+class TheRulePrimitives(unittest.TestCase):
+    """The two arms must be scored by one statistic, fitted the same way."""
+
+    def test_best_threshold_rule_chooses_the_direction_that_separates(self):
+        rows = [{"x": 1, "y": 1}, {"x": 2, "y": 1}, {"x": 3, "y": 0}, {"x": 4, "y": 0}]
+        rule = baseline_mod.best_threshold_rule(rows, "x", outcome="y")
+        self.assertEqual(rule["op"], "<=", "low x flags, so the direction must be <=")
+        self.assertGreater(rule["youden"], 0.0)
+
+    def test_best_threshold_rule_is_none_when_the_column_carries_no_pairs(self):
+        self.assertIsNone(baseline_mod.best_threshold_rule([{"y": 0}], "x", outcome="y"))
+
+    def test_score_rule_refuses_a_rule_that_flags_on_the_outcome(self):
+        out = baseline_mod.score_rule({"field": "y", "op": ">=", "threshold": 1},
+                                      [{"y": 1}, {"y": 0}], outcome="y")
+        self.assertFalse(out["scored"])
+        self.assertTrue(out["names_the_outcome"])
+        self.assertIn("circular", out["reason"])
+
+    def test_score_rule_reports_a_non_numeric_threshold_rather_than_guessing(self):
+        out = baseline_mod.score_rule({"field": "x", "op": ">=", "threshold": None},
+                                      [{"x": 1, "y": 0}], outcome="y")
+        self.assertFalse(out["scored"])
+        self.assertIn("numeric threshold", out["reason"])
+
+    def test_scoring_a_rule_is_deterministic(self):
+        fit, hold = spurious_fixture()
+        rule = baseline_mod.best_threshold_rule(fit, "m", outcome="y")
+        self.assertEqual(baseline_mod.score_rule(rule, hold, outcome="y"),
+                         baseline_mod.score_rule(rule, hold, outcome="y"))
+
+
+class TheArmComparison(unittest.TestCase):
+    """`compare` scores the naive and engineered arms on one fixture, same metric."""
+
+    def _cli(self, argv: list[str]) -> int:
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(argv)
+        out.close()
+        err.close()
+        return code
+
+    def test_the_shipped_fixture_is_scored_and_the_engineered_arm_does_not_yet_win(self):
+        # the naive arm's correlate collapses out of sample and the engineered rule is
+        # circular, so the honest verdict is "not yet" -- exit 1, not a false win
+        self.assertEqual(self._cli([
+            "compare", "--scenario", (EXAMPLES / "orders_scenario.json").as_posix(),
+            "--holdout", (EXAMPLES / "orders_holdout.json").as_posix(),
+            "--driver", "handoffs"]), 1)
+
+    def test_a_fixture_that_cannot_carry_the_comparison_is_refused(self):
+        # fitting and scoring on the same sample never lets a decoy collapse
+        scenario = (EXAMPLES / "orders_scenario.json").as_posix()
+        self.assertEqual(self._cli(["compare", "--scenario", scenario,
+                                    "--holdout", scenario, "--driver", "handoffs"]), 1)
+
+
 class TheVerdicts(unittest.TestCase):
     def _cli(self, argv: list[str]) -> int:
         out, err = io.StringIO(), io.StringIO()

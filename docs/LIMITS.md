@@ -173,8 +173,24 @@ handoffs          fit +0.798   holdout +0.839   <- the planted driver
 
 `SEPARABLE: True`, exit 0. That is the necessary condition for the comparison to be
 runnable, and it is all it is: a separable fixture means the naive arm *can* be
-punished, not that the engineered arm wins. Scoring the two arms against each other
-on this fixture is the next step and **has not been done**.
+punished, not that the engineered arm wins.
+
+The comparison has now been **run** (`qse.cli compare`), scoring both arms by the
+same statistic -- Youden's J of the rule's flagged set against the outcome -- on the
+holdout:
+
+```text
+arm          rule                      fit J  holdout J  flagged
+naive        staff_on_shift <= 6.0      +0.826     +0.000      132
+engineered   failed >= 24.0               n/a        n/a        -
+```
+
+The naive arm collapses (`+0.826` in-sample, `+0.000` out of sample), which is the
+fixture working as intended. But the engineered arm **cannot be scored at all**: the
+rule QSE built is a conservative default that flags on the outcome itself
+(`failed >= 24`), which is circular and is reported as such rather than scored. So
+the moonshot's terminal claim still does **not** hold -- not because the naive arm
+won, but because the engineered arm produced no valid detector. `compare` exits `1`.
 
 An earlier version of this file recorded the opposite result -- that the shipped
 pair was `SEPARABLE: False`, because the decoys held out of sample as strongly as
@@ -182,7 +198,9 @@ the driver and `precursor_h` was a *deterministic* function of `handoffs`
 (r = 1.000) and so tied it forever. That was corrected by generating a holdout that
 removes the period-specific confounds, not by changing the audit.
 
-**And on the current code the engine still does not land on a mechanism.** Its
+**And on the current code the engine still does not land on a mechanism.** The
+comparison above makes this concrete: the engine's verified artifact flags on the
+outcome, so it is not a detector and cannot win the control-arm comparison. Its
 discriminating experiment returns `INCONCLUSIVE (supported=None, refuted=False)`
 on both datasets; the explanation it selects is a measurement objection
 (`MEASUREMENT`/`TELEMETRY` -- "the data is insufficient to support ..."); and the

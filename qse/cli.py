@@ -17,8 +17,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from . import __version__, baseline as baseline_mod, closeout as closeout_mod, metrics as metrics_mod
 from .control.controller import (
@@ -29,6 +30,7 @@ from .control.controller import (
 )
 from .control.policy import RULES
 from .control.state import State
+from .experiment import runner as runner_mod
 from .experiment.runner import Dataset
 from .ids import freeze, parse_ts
 from .inversion.ail import AILEngine
@@ -472,6 +474,100 @@ def cmd_closeout(args: argparse.Namespace) -> int:
     return OK if term["state"] == "SUCCESS" else DEFECT
 
 
+def cmd_compare(args: argparse.Namespace) -> int:
+    """Score the two arms of the moonshot's terminal test on one fixture.
+
+    The terminal test is a comparison -- *does engineered questioning create
+    measurable capability that would not otherwise exist* -- so it needs both a
+    counterfactual and a common metric. This command supplies both:
+
+    * the **naive arm** is a competent analyst with no question engineering: it
+      takes the top correlate on the fitting sample and fits its best single
+      threshold;
+    * the **engineered arm** is QSE itself: the decision rule it built and
+      verified.
+
+    Both are then scored by the *same* statistic on the holdout -- Youden's J of
+    the rule's flagged set against the outcome -- so neither arm gets a friendlier
+    metric. Exit 0 only when the engineered arm beats the naive one by a clear
+    margin; otherwise the honest answer is "not yet", and 1.
+    """
+    fit = _load_json(args.scenario, "scenario").get("rows") or []
+    hold = _load_json(args.holdout, "holdout").get("rows") or []
+    if not fit or not hold:
+        raise Unusable("both the scenario and the holdout need rows to compare on")
+
+    gate = baseline_mod.audit(fit, hold, outcome=args.outcome, driver=args.driver)
+    if not gate["separable"]:
+        _print(gate, args.json,
+               f"  the fixture cannot carry the comparison: {gate['reason']}")
+        return DEFECT
+
+    pick = gate["naive_pick"]["column"]
+    naive_rule = baseline_mod.best_threshold_rule(fit, pick, outcome=args.outcome) or {}
+
+    payload = _load_json(args.scenario, "scenario")
+    ledger = args.ledger or str(Path(tempfile.gettempdir()) / "qse-compare.jsonl")
+    Path(ledger).unlink(missing_ok=True)
+    engine = Engine(ledger, builder=args.builder, verifier=args.verifier)
+    report = engine.run(
+        payload.get("question") or args.question,
+        answers=payload.get("facts") or {},
+        datasets=[Dataset(name=str(payload.get("name") or "fit"), rows=fit),
+                  Dataset(name="holdout", rows=hold)],
+        rows=fit,
+        authority=args.authority or None,
+    )
+    built = next((s for s in report.stages if s.get("stage") == "build"), None)
+    eng_rule = (built or {}).get("rule") or {}
+
+    def row(name: str, rule: Mapping[str, Any]) -> dict[str, Any]:
+        return {"arm": name, "fit": baseline_mod.score_rule(rule, fit, outcome=args.outcome),
+                "holdout": baseline_mod.score_rule(rule, hold, outcome=args.outcome)}
+
+    arms = [row("naive", naive_rule), row("engineered", eng_rule)]
+    margin = runner_mod.DISCRIMINATION_MARGIN_FLOOR
+    n_score, e_score = arms[0]["holdout"], arms[1]["holdout"]
+    engineered_wins = bool(
+        n_score.get("scored") and e_score.get("scored")
+        and e_score["youden"] > n_score["youden"] + margin
+    )
+    if not e_score.get("scored"):
+        verdict = (f"the engineered arm cannot be scored: {e_score.get('reason')}. "
+                   "The comparison is runnable, but the engine produced no valid detector to "
+                   "score against the naive arm.")
+    elif engineered_wins:
+        verdict = (f"the engineered arm separates the holdout better by more than the "
+                   f"{margin} margin, so the moonshot's terminal claim holds on this fixture")
+    else:
+        verdict = (f"neither arm detects the bottleneck: the naive arm's {pick!r} collapses out "
+                   f"of sample and the engineered arm does not beat it by the {margin} margin")
+
+    lines = [f"  fixture separable: PASS; naive arm reaches for {pick!r} on the fitting sample",
+             f"    {'arm':<12} {'rule':<34} {'fit J':>7} {'holdout J':>10} {'flagged':>8}"]
+    for arm in arms:
+        rule = naive_rule if arm["arm"] == "naive" else eng_rule
+        fdesc = (f"{rule.get('field')} {rule.get('op')} {rule.get('threshold')}"
+                 if rule else "(no rule built)")
+        fj = arm["fit"].get("youden")
+        hj = arm["holdout"].get("youden")
+        lines.append(f"    {arm['arm']:<12} {fdesc:<34} "
+                     f"{('n/a' if fj is None else format(fj, '+.3f')):>7} "
+                     f"{('n/a' if hj is None else format(hj, '+.3f')):>10} "
+                     f"{str(arm['holdout'].get('flagged', '-')):>8}")
+        for note in (arm["fit"].get("reason"), arm["holdout"].get("reason")):
+            if note and not arm["holdout"].get("scored"):
+                lines.append(f"        note: {note}")
+                break
+    lines.append("")
+    lines.append(f"  engineered arm wins: {engineered_wins}")
+    lines.append(f"      {verdict}")
+    _print({"separable": True, "naive_pick": pick, "arms": arms,
+            "engineered_wins": engineered_wins, "margin": margin, "verdict": verdict}, args.json,
+           "\n".join(lines))
+    return OK if engineered_wins else DEFECT
+
+
 def cmd_selftest(args: argparse.Namespace) -> int:
     """Run the shipped scenario, then the acceptance list, on one ledger.
 
@@ -562,6 +658,18 @@ def build_parser() -> argparse.ArgumentParser:
     fixture.add_argument("--holdout", help="a second, independent sample")
     fixture.add_argument("--outcome", default="failed", help="the column being explained")
     fixture.add_argument("--driver", help="the column the fixture was built around")
+
+    compare = add("compare", cmd_compare,
+                  "score the naive and engineered arms on one fixture, same metric")
+    compare.add_argument("--scenario", required=True)
+    compare.add_argument("--holdout", required=True)
+    compare.add_argument("--driver", required=True, help="the column the fixture was built around")
+    compare.add_argument("--outcome", default="failed", help="the column being explained")
+    compare.add_argument("--ledger", help="where to record the engineered run (default: beside the scenario)")
+    compare.add_argument("--question", help="defaults to the scenario file's own 'question' field")
+    compare.add_argument("--authority", default="VP of Operations")
+    compare.add_argument("--builder", default=DEFAULT_BUILDER)
+    compare.add_argument("--verifier", default=DEFAULT_VERIFIER)
 
     selftest = add("selftest", cmd_selftest, "run the shipped scenario and then the acceptance list")
     selftest.add_argument("--ledger", default="/tmp/qse-selftest.jsonl")

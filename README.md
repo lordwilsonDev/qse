@@ -50,6 +50,8 @@ python3 -m qse.cli checks   --ledger /tmp/qse.jsonl     # the 17 conditions, exi
 python3 -m qse.cli closeout --ledger /tmp/qse.jsonl     # the 15 close-out questions, exit 0 only on SUCCESS
 python3 -m qse.cli fixture  --scenario examples/orders_scenario.json \
     --holdout examples/orders_holdout.json --driver handoffs   # can this fixture measure anything?
+python3 -m qse.cli compare  --scenario examples/orders_scenario.json \
+    --holdout examples/orders_holdout.json --driver handoffs   # score naive vs engineered, same metric
 python3 -m qse.cli metrics  --ledger /tmp/qse.jsonl     # QBY, BSR, EC, BC, VI, OC
 python3 -m qse.cli replay   --ledger /tmp/qse.jsonl     # rebuild the run from the ledger alone
 python3 -m qse.cli why <qid> --ledger /tmp/qse.jsonl    # reconstruct why that question was asked
@@ -112,6 +114,33 @@ period an analyst actually fits on, confounds and all. Only the holdout is
 constructed, and only to remove the period-specific confounds. That is not rigging
 the comparison's outcome -- it is shaping the fixture into the form the test
 requires, the same way a controlled experiment chooses a clean control period.
+
+### The comparison, actually run
+
+`qse.cli compare` scores both arms by the **same** statistic on the holdout --
+Youden's J of the rule's flagged set against the outcome -- so neither arm gets a
+friendlier metric. The naive arm takes the top fit correlate and fits its best
+single threshold; the engineered arm is the rule QSE built and verified:
+
+```text
+    arm          rule                      fit J  holdout J  flagged
+    naive        staff_on_shift <= 6.0      +0.826     +0.000      132
+    engineered   failed >= 24.0               n/a        n/a        -
+      note: the rule flags on 'failed', the outcome it would be scored against
+            -- circular, so it is not scored
+
+  engineered arm wins: False
+```
+
+Two honest readings, both unflattering and both the point:
+
+- The **naive arm collapses** exactly as the fallible-analyst story predicts
+  (`+0.826` in-sample, `+0.000` out of sample). The fixture punishes it.
+- The **engineered arm cannot even be scored**: the rule it built is a
+  conservative default that flags on the outcome itself (`failed >= 24`), which
+  is circular. So the moonshot's terminal claim still does **not** hold -- not
+  because the naive arm won, but because the engineered arm produced no valid
+detector. `compare` exits `1`, which is the honest verdict, not a bug.
 
 ## The close-out
 

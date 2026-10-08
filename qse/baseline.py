@@ -30,9 +30,10 @@ from typing import Any, Iterable, Mapping, Sequence
 
 # Deliberately the engine's own primitives: a reimplementation could disagree with
 # the number the engine acts on, which would make the audit worthless.
-from .experiment.runner import _pearson, _xy_pairs
+from .experiment.runner import _outcome_pairs, _pearson, _xy_pairs, _youden
 
-__all__ = ["rank_correlates", "naive_pick", "audit", "SEPARABILITY_MARGIN"]
+__all__ = ["rank_correlates", "naive_pick", "audit", "SEPARABILITY_MARGIN",
+           "best_threshold_rule", "score_rule"]
 
 #: How far a column's out-of-sample correlation may fall short of the driver's
 #: before it counts as collapsed. A convention, named so it can be argued with.
@@ -182,6 +183,82 @@ def audit(
         "survivors": survivors,
         "margin": margin,
         "reason": reason,
+    }
+
+
+def best_threshold_rule(
+    rows: Sequence[Mapping[str, Any]],
+    column: str,
+    *,
+    outcome: str = "failed",
+) -> dict[str, Any] | None:
+    """The best single-threshold detector on ``column``, *fit* on ``rows``.
+
+    This is the naive arm's rule made concrete: pick one column, then choose the
+    direction and the cut that best separates the outcome on the fitting sample.
+    Both directions are scanned, so a column that is protective (low values flag)
+    gets a ``<=`` rule. Returns ``None`` when the column carries no usable pairs.
+    """
+    pairs = _outcome_pairs(rows, column, outcome)
+    best: dict[str, Any] | None = None
+    for op, sign in ((">=", 1.0), ("<=", -1.0)):
+        j, threshold, _, _, n = _youden([(sign * v, f) for v, f in pairs])
+        if threshold is None:
+            continue
+        real = threshold if op == ">=" else -threshold
+        candidate = {
+            "field": str(column),
+            "op": op,
+            "threshold": round(real, 4),
+            "youden": round(j, 4),
+            "n": n,
+        }
+        if best is None or candidate["youden"] > best["youden"]:
+            best = candidate
+    return best
+
+
+def score_rule(
+    rule: Mapping[str, Any],
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    outcome: str = "failed",
+) -> dict[str, Any]:
+    """Score a ``{field, op, threshold}`` rule as a detector of ``outcome``.
+
+    The *same* statistic for both arms -- Youden's J of the rule's flagged set
+    against the outcome -- so the naive and engineered arms are measured on one
+    axis and neither gets a friendlier metric. A rule whose field *is* the outcome
+    is reported as naming the outcome rather than scored, because a rule that
+    reads ``failed`` to predict ``failed`` is circular and would score perfectly
+    for the wrong reason.
+    """
+    field = rule.get("field")
+    op = rule.get("op", ">=")
+    threshold = rule.get("threshold")
+    if not isinstance(field, str) or not field:
+        return {"scored": False, "reason": "the rule names no field"}
+    if not isinstance(threshold, (int, float)):
+        return {"scored": False, "reason": "the rule has no numeric threshold",
+                "field": field, "op": op}
+    if str(field) == outcome:
+        return {"scored": False, "names_the_outcome": True, "field": field, "op": op,
+                "reason": (f"the rule flags on {outcome!r}, the outcome it would be scored "
+                           "against -- circular, so it is not scored")}
+    sign = -1.0 if op == "<=" else 1.0  # _youden scans >=, so invert the values to score <=
+    pairs = _outcome_pairs(rows, field, outcome)
+    j, _, sens, spec, n = _youden([(sign * v, f) for v, f in pairs])
+    flagged = sum(1 for v, _ in pairs if (v <= threshold if op == "<=" else v >= threshold))
+    return {
+        "scored": True,
+        "field": field,
+        "op": op,
+        "threshold": threshold,
+        "youden": round(j, 4),
+        "sensitivity": round(sens, 4),
+        "specificity": round(spec, 4),
+        "flagged": flagged,
+        "n": n,
     }
 
 
