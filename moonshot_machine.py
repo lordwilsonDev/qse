@@ -229,6 +229,20 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
     }
     subject_expected = {name: kind for name, (_now, kind) in subject_cases.items()}
 
+    # The declared policy: the same vouch conflict, read under each rule. The verdict is
+    # fixed by a rule that existed before the data did, never by which witness the reader
+    # happens to believe -- and the reader can still state a different rule explicitly.
+    vouch = str(directory / "vouch.jsonl")
+    continuity.beat(vouch, wall=1000.0, mono=0.0, boot=500.0, pid=1, interval=60.0,
+                    policy="token",
+                    subject={"name": "job", "pid": 10, "started": "t0", "token": "run-A"})
+    continuity.beat(vouch, wall=1060.0, mono=60.0, boot=500.0, pid=1, interval=60.0,
+                    subject={"name": "job", "pid": 99, "started": "t9", "token": "run-A"})
+    policy_default = continuity.verify(vouch, sleeps=[])               # reads "token"
+    policy_report = continuity.verify(vouch, sleeps=[], policy="report")  # reader overrides
+    policy_effects = {p: continuity.resolve_subject("SUBJECT_VOUCH_CONFLICT", p)[0]
+                      for p in continuity.POLICIES}
+
     return {
         "real": {"ledger": real, "verdict": report["verdict"], "beats": report["beats"],
                  "chain_ok": report["chain_ok"], "counts": report["counts"],
@@ -240,6 +254,10 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
                     "witnesses": subject_report["subject_witnesses"],
                     "kinds": [row["kind"] for row in subject_report["subject_transitions"]],
                     "injected": subject_injected, "expected": subject_expected},
+        "policy": {"declared": policy_default["policy"],
+                   "default_verdict": policy_default["verdict"],
+                   "reattributed_verdict": policy_report["verdict"],
+                   "vouch_conflict_break": policy_effects},
         "absences": continuity.absences(real),
         "power_sleeps_recorded": len(power.load()),
     }
@@ -259,7 +277,12 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
                                    "a recorder that died": "HEARTBEAT_LOST"}
           and demo["subject"]["verdict"] == "SUBJECT_BROKE"
           and demo["subject"]["injected"] == demo["subject"]["expected"]
-          and "SUBJECT_OK" in demo["subject"]["kinds"])
+          and "SUBJECT_OK" in demo["subject"]["kinds"]
+          and demo["policy"]["declared"] == "token"
+          and demo["policy"]["default_verdict"] == "CONTINUOUS"
+          and demo["policy"]["reattributed_verdict"] == "SUBJECT_BROKE"
+          and demo["policy"]["vouch_conflict_break"] == {"report": True, "probe": True,
+                                                          "token": False, "both": True})
 
     lines: list[str] = []
     lines.append("MOONSHOT-M  the machine that can attest its own continuity")
@@ -302,6 +325,10 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
     lines.append("   stopped' and 'the job never stopped' are told apart -- the recorder can")
     lines.append("   stay continuous while the subject dies. What did NOT change is recorded")
     lines.append("   too, because 'the disk did not fill' is evidence a log of changes cannot.")
+    lines.append("   A disagreement between the two witnesses is settled by a policy DECLARED")
+    lines.append("   before the run (report / probe / token / both), so the verdict follows a")
+    lines.append("   stated rule rather than the reader's belief -- and 'report', the default,")
+    lines.append("   settles nothing, which is the honest answer when no rule was given.")
     lines.append("")
 
     lines.append("4. THE WITNESS, RUN")
@@ -321,6 +348,12 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
     lines.append(f"     witnesses on the real ledger: {wit['identity_changes']} identity "
                  f"change(s), {wit['token_changes']} token change(s), "
                  f"{wit['disagreements']} disagreement(s)")
+    pol = demo["policy"]
+    lines.append(f"   policy (declared before the run): a vouch conflict declared "
+                 f"{pol['declared']!r} -> {pol['default_verdict']}; re-read under "
+                 f"'report' -> {pol['reattributed_verdict']}")
+    lines.append(f"     it is a break under {[p for p, b in pol['vouch_conflict_break'].items() if b]}"
+                 f", excused only under {[p for p, b in pol['vouch_conflict_break'].items() if not b]}")
     lines.append("   absences (what did not change):")
     for row in demo["absences"]:
         state = "held steady" if not row["changed"] else "changed"

@@ -93,6 +93,15 @@ So the inverse capability is:
   to a machine -- agreement is reported, never counted into a decision -- so no single
   witness is allowed to overrule the other, and the two are counted separately
   (`subject_witnesses`).
+- **A declared policy, applied and not hidden.** A disagreement between the two witnesses
+  is settled by a policy declared *before* the run (recorded on a beat) or passed to
+  `verify`: `report` (the default, which settles nothing), `probe` (the machine's
+  observation outranks the token), `token` (the subject's declaration outranks the
+  observation), or `both` (require agreement). `verify` reports the policy it used and,
+  per transition, whether that policy treated it as a break and why -- so the rule is
+  visible in the record rather than buried in a verdict. A reader may restate the policy
+  explicitly, which re-reads the same bytes under a different *stated* rule; nothing is
+  settled silently. An unknown policy is refused, not defaulted.
 - **Absence is evidence.** A watched metric that never moved is computed and reported
   with the same standing a change would get, because "the disk did not fill" is exactly
   what a log of changes can never show.
@@ -157,13 +166,13 @@ Exit `0` when every demonstration holds, `1` when one does not, `2` for unusable
 
 ## Next question (the one the build produced)
 
-With two witnesses, the record reports their disagreement but does not decide it. When a
-supervisor restarts a crashed job and preserves its run id (`SUBJECT_VOUCH_CONFLICT`), the
-machine's observation and the subject's declaration point opposite ways, and QSE will not
-pick one -- that is the same refusal as MoIE's "agreement is reported, never counted". The
-next question is what an *operator* should be able to do with the disagreement: should the
-record carry a policy ("a vouched token outranks a probed pid", or the reverse, or
-"require both") that the *consumer* declares *before* the run, so the verdict is settled by
-a stated rule rather than by whichever witness the reader happens to believe? That is the
-boundary between reporting a conflict and resolving it, and settling it silently is the
-failure mode this whole moonshot exists to avoid.
+The declared policy settles *identity* disagreements, which exposes the next gap: the
+record attests **liveness, not progress.** A subject can be perfectly `CONTINUOUS` -- same
+process, same token, heartbeats on time -- while it is deadlocked, waiting on a lock, or
+looping over an empty queue and doing nothing. That is the same shape as the inversion that
+started this moonshot: the failure you can see (a process that stopped) is the one you
+already catch; the failure that matters is the one the record cannot see (a process that
+kept running and made no progress). The next question is whether a beat should carry a
+*progress* signal -- a value the subject advances (a sequence number, a row count, a queue
+position) -- so the witness can report `CONTINUOUS but not advancing`, which no liveness
+check can. That is a new failure class, not a parameter of the current one.

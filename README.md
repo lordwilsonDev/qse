@@ -108,7 +108,10 @@ the other, so their disagreement is the finding -- `SUBJECT_VOUCH_CONFLICT` (a n
 vouching the same run id) versus `SUBJECT_TOKEN_DRIFT` (same process, a new run id). It
 also keeps **absence as evidence**: a watched metric that never moved is reported with the
 same standing a change would get, because "the disk did not fill" is exactly what a log of
-changes can never show. The full inversions and the honest limits are in
+changes can never show. And a disagreement between the two witnesses is settled by a
+**policy declared before the run** (`report` / `probe` / `token` / `both`), recorded and
+applied, so the verdict follows a stated rule that a reader can restate -- nothing is
+settled silently. The full inversions and the honest limits are in
 [docs/moonshot-m.md](docs/moonshot-m.md).
 
 ## MOONSHOT-C — the same test on a cloud bill, in one script
@@ -270,7 +273,7 @@ cd ~/projects/qse
 python3 -B -W error::ResourceWarning -m unittest discover -s qse/tests -t .
 ```
 
-380 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
+385 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
 resolves) and so does `-B` (bytecode caches left in the tree are noise).
 
 ## The seven slots

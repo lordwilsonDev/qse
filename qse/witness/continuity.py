@@ -60,6 +60,42 @@ SUBJECT_KINDS = ("SUBJECT_UNWATCHED", "SUBJECT_OK", "SUBJECT_RESTARTED",
 SUBJECT_VOUCH_CONFLICT = "SUBJECT_VOUCH_CONFLICT"
 SUBJECT_TOKEN_DRIFT = "SUBJECT_TOKEN_DRIFT"
 
+#: How a consumer chooses to settle a disagreement *between the two witnesses*. The
+#: policy is declared before the run (recorded on a beat) or passed to ``verify``, so the
+#: verdict is fixed by a stated rule rather than by whichever witness a reader believes.
+#: ``report`` is the default and resolves nothing -- the disagreement stays a break, which
+#: is the honest choice when no policy was given. The others pick a winner *on the record*:
+#:
+#: * ``probe`` -- the machine's observation outranks the token: a new process is a restart
+#:   even if the run id was preserved, and a token change on the same process is excused
+#:   (the process did not stop, so the probe says the subject did not).
+#: * ``token`` -- the subject's declaration outranks the probe: a preserved run id means
+#:   the logical run continued across a new process, and a re-declared token is a break.
+#: * ``both`` -- require both witnesses to agree the subject is continuous; any
+#:   disagreement is a break.
+POLICIES = ("report", "probe", "token", "both")
+
+
+def resolve_subject(kind: str, policy: str) -> tuple[bool, str]:
+    """Whether a subject transition is a break under a declared policy, and why.
+
+    Returns ``(is_break, why)``. The reason is returned rather than a bare bool so the
+    record can show *how the rule treated the case*, not only that a rule existed.
+    """
+    if policy not in POLICIES:
+        raise ValueError(f"unknown subject policy {policy!r}; choose from {POLICIES}")
+    if policy == "probe" and kind == SUBJECT_TOKEN_DRIFT:
+        return False, ("the policy trusts the machine's observation, and the process did not "
+                       "change, so the token change does not interrupt the subject")
+    if policy == "token" and kind == SUBJECT_VOUCH_CONFLICT:
+        return False, ("the policy trusts the declared token, and the run id did not change, "
+                       "so the new process does not interrupt the logical run")
+    if kind in (SUBJECT_VOUCH_CONFLICT, SUBJECT_TOKEN_DRIFT):
+        return True, f"the policy {policy!r} does not excuse this disagreement"
+    if kind in ("SUBJECT_RESTARTED", "SUBJECT_MISSING"):
+        return True, "the subject's continuity is not established"
+    return False, "no break under this policy"
+
 #: The fields of a subject identity that must not change across a restart. A pid can be
 #: reused; a start time cannot be reproduced by a new process, so both are kept.
 SUBJECT_FIELDS = ("name", "pid", "started")
@@ -96,6 +132,7 @@ def beat(
     pid: int | None = None,
     watches: Mapping[str, Any] | None = None,
     subject: Mapping[str, Any] | None = None,
+    policy: str | None = None,
     interval: float = DEFAULT_INTERVAL,
     note: str = "",
 ) -> dict[str, Any]:
@@ -111,9 +148,12 @@ def beat(
     beat rather than once, because a subject that dies and returns is only visible as a
     change across beats; compare with ``classify_subject``.
     """
+    if policy is not None and policy not in POLICIES:
+        raise ValueError(f"unknown subject policy {policy!r}; choose from {POLICIES}")
     record = {
         "ev": BEAT,
         "subject": dict(subject) if subject else None,
+        "policy": (str(policy) if policy else None),
         "wall": round(float(time.time() if wall is None else wall), 6),
         "mono": round(float(time.monotonic() if mono is None else mono), 6),
         "boot": boot if boot is not None else boot_time(),
@@ -273,6 +313,7 @@ def verify(
     *,
     sleeps: Sequence[power.Sleep] | None = None,
     slack: float = SLACK,
+    policy: str | None = None,
 ) -> dict[str, Any]:
     """Check the chain and classify every interval in it. Reports, never rounds up."""
     lines = chain.read_lines(path)
@@ -291,6 +332,7 @@ def verify(
         "subject_counts": {},
         "subject_breaks": [],
         "subject_witnesses": {},
+        "policy": None,
         "power_sleeps": None,
         "verdict": "EMPTY",
     }
@@ -305,6 +347,16 @@ def verify(
 
     beats = [r for r in records if r.get("ev") == BEAT]
     result["beats"] = len(beats)
+
+    # The policy is declared before the run (on a beat) or passed in by the reader; an
+    # explicit argument wins, so a consumer can re-read a record under a rule it states
+    # rather than the one the writer chose. Reading it from the record is the point: the
+    # verdict should depend on a rule that existed before the data did.
+    if policy is None:
+        policy = next((str(b["policy"]) for b in beats if b.get("policy")), "report")
+    if policy not in POLICIES:
+        raise ValueError(f"unknown subject policy {policy!r}; choose from {POLICIES}")
+    result["policy"] = policy
     transitions = [
         classify(a, b, sleeps=sleeps, slack=slack) for a, b in zip(beats, beats[1:])
     ]
@@ -328,17 +380,16 @@ def verify(
                           "recorder survived")
         if current.get("subject"):
             had_subject = True
+        is_break, resolution = resolve_subject(row["kind"], policy)
+        row["break"] = is_break
+        row["resolution"] = resolution
         subject_rows.append(row)
     result["subject_transitions"] = subject_rows
     subject_counts: dict[str, int] = {}
     for row in subject_rows:
         subject_counts[row["kind"]] = subject_counts.get(row["kind"], 0) + 1
     result["subject_counts"] = subject_counts
-    result["subject_breaks"] = [
-        row for row in subject_rows
-        if row["kind"] in ("SUBJECT_RESTARTED", "SUBJECT_MISSING",
-                            SUBJECT_VOUCH_CONFLICT, SUBJECT_TOKEN_DRIFT)
-    ]
+    result["subject_breaks"] = [row for row in subject_rows if row["break"]]
     # The two witnesses, counted separately, so a reader can see which one moved -- and
     # how often they disagreed with each other rather than with the subject.
     witnesses = {"identity_changes": 0, "token_changes": 0, "disagreements": 0}

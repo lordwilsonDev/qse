@@ -54,6 +54,13 @@ class TheMoonshotMachine(unittest.TestCase):
         self.assertEqual(subject["injected"]["same process, a new token"],
                          "SUBJECT_TOKEN_DRIFT")
         self.assertIn("SUBJECT_MISSING", subject["kinds"])
+        # The declared policy fixes the verdict by a rule, and the reader can restate it.
+        pol = payload["demo"]["policy"]
+        self.assertEqual(pol["declared"], "token")
+        self.assertEqual(pol["default_verdict"], "CONTINUOUS")
+        self.assertEqual(pol["reattributed_verdict"], "SUBJECT_BROKE")
+        self.assertEqual(pol["vouch_conflict_break"],
+                         {"report": True, "probe": True, "token": False, "both": True})
 
     def test_the_page_names_the_moonshot_and_its_verdict(self):
         out = io.StringIO()

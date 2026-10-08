@@ -198,6 +198,54 @@ class TheSubjectTheRecordIsAbout(unittest.TestCase):
         self.assertEqual(report["subject_witnesses"]["identity_changes"], 1)
         self.assertEqual(report["subject_witnesses"]["token_changes"], 0)
 
+    def _vouch(self, policy=None) -> None:
+        """A ledger where a new process declares the same run id: SUBJECT_VOUCH_CONFLICT."""
+        a = {"name": "job", "pid": 10, "started": "t0", "token": "run-A"}
+        b = {"name": "job", "pid": 99, "started": "t9", "token": "run-A"}
+        continuity.beat(self.path, wall=1_000.0, mono=0.0, boot=500.0, pid=1, interval=60.0,
+                        subject=a, policy=policy)
+        continuity.beat(self.path, wall=1_060.0, mono=60.0, boot=500.0, pid=1, interval=60.0,
+                        subject=b)
+
+    def test_a_vouch_conflict_is_a_break_under_report_but_excused_under_token(self):
+        self._vouch()
+        self.assertEqual(continuity.verify(self.path, sleeps=[])["verdict"], "SUBJECT_BROKE")
+        self.assertEqual(continuity.verify(self.path, sleeps=[], policy="token")["verdict"],
+                         "CONTINUOUS")
+        self.assertEqual(continuity.verify(self.path, sleeps=[], policy="probe")["verdict"],
+                         "SUBJECT_BROKE")
+
+    def test_a_token_drift_is_excused_under_probe_but_not_under_token(self):
+        a = {"name": "job", "pid": 10, "started": "t0", "token": "run-A"}
+        b = {"name": "job", "pid": 10, "started": "t0", "token": "run-B"}
+        continuity.beat(self.path, wall=1_000.0, mono=0.0, boot=500.0, pid=1, interval=60.0,
+                        subject=a)
+        continuity.beat(self.path, wall=1_060.0, mono=60.0, boot=500.0, pid=1, interval=60.0,
+                        subject=b)
+        self.assertEqual(continuity.verify(self.path, sleeps=[], policy="probe")["verdict"],
+                         "CONTINUOUS")
+        self.assertEqual(continuity.verify(self.path, sleeps=[], policy="token")["verdict"],
+                         "SUBJECT_BROKE")
+
+    def test_the_policy_declared_on_a_beat_is_what_verify_reads(self):
+        self._vouch(policy="token")
+        report = continuity.verify(self.path, sleeps=[])
+        self.assertEqual(report["policy"], "token")
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_a_reader_can_restate_the_policy_and_change_the_verdict(self):
+        self._vouch(policy="token")
+        report = continuity.verify(self.path, sleeps=[], policy="report")
+        self.assertEqual(report["policy"], "report")
+        self.assertEqual(report["verdict"], "SUBJECT_BROKE")
+
+    def test_an_unknown_policy_is_refused(self):
+        self._vouch()
+        with self.assertRaises(ValueError):
+            continuity.verify(self.path, sleeps=[], policy="trust-everything")
+        with self.assertRaises(ValueError):
+            continuity.beat(self.path, wall=2_000.0, policy="trust-everything")
+
     def test_the_subject_probe_reads_a_live_process_and_none_once_it_ends(self):
         proc = subprocess.Popen(["sleep", "5"])
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
