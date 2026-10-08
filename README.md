@@ -65,10 +65,42 @@ python3 -m qse.cli invert "Can we predict operational bottlenecks before they be
 # MOONSHOT-C: the same comparison on a second question, in a second domain
 python3 moonshot_cloud.py                 # gate, build, score, check -- one command, one page
 python3 moonshot_cloud.py --write examples  # write the synthetic cloud fixture and stop
+
+# MOONSHOT-M: invert the axioms of an always-on Mac mini and build the witness
+python3 moonshot_machine.py               # reverse-engineer the machine, invert, run the witness
 ```
 
 Exit codes are the verdict: `0` it did what it says and every check it ran holds,
 `1` a defect, a refusal, or an unmet condition, `2` input QSE cannot use at all.
+
+## MOONSHOT-M — the machine that can attest its own continuity
+
+Everyone's always-on Mac mini runs *something*: local models, agents, media. The settled
+belief is **"the mini is worth running because it computes."** AIL inverts the belief, not
+the sentence. Its TEMPORAL, AUTHORITY, FAILURE and MEASUREMENT axioms -- that an always-on
+node is one continuous process whose log is its history; that its own log is evidence of
+what it did; that the failures that matter are the ones it observed; that its health is in
+its own reports -- invert to a single capability no one builds:
+
+> the machine's value is not the work it does; it is the **continuity it can prove**,
+> which no machine can honestly prove about itself.
+
+`moonshot_machine.py` derives that with the AIL operators (7 axioms → 63 gated inversions,
+7 refused), then **runs** it: `qse/witness/` keeps a hash-chained heartbeat whose every gap
+is a claim to be settled by an *independent* witness, never by the machine.
+
+```text
+real ledger: 4 beats, verdict CONTINUOUS, chain_ok True
+tampered line rewritten -> verdict TAMPERED
+injected history, a machine that slept    -> SLEPT          (the OS power log explains it)
+injected history, a machine that rebooted -> REBOOT         (the boot time changed)
+injected history, a recorder that died    -> HEARTBEAT_LOST (nothing explains it)
+```
+
+It also keeps **absence as evidence**: a watched metric that never moved is reported with
+the same standing a change would get, because "the disk did not fill" is exactly what a log
+of changes can never show. The full inversions and the honest limits are in
+[docs/moonshot-m.md](docs/moonshot-m.md).
 
 ## MOONSHOT-C — the same test on a cloud bill, in one script
 
@@ -229,7 +261,7 @@ cd ~/projects/qse
 python3 -B -W error::ResourceWarning -m unittest discover -s qse/tests -t .
 ```
 
-356 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
+371 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
 resolves) and so does `-B` (bytecode caches left in the tree are noise).
 
 ## The seven slots
@@ -279,8 +311,10 @@ qse/control/        replayable state, policy, information gain, the controller
 qse/ledger/         hash-chained JSONL events, receipts, the "why" reconstruction
 qse/metrics/        QBY, BSR, EC, BC, VI, OC
 qse/cloud/          the MOONSHOT-C synthetic cloud fixture (scenario.py)
+qse/witness/        MOONSHOT-M: the continuity ledger and the OS power-log witness
 qse/cli.py          the command line
 moonshot_cloud.py   MOONSHOT-C: the same terminal comparison, on a cloud bill, in one command
+moonshot_machine.py MOONSHOT-M: invert a machine's axioms and build the witness, in one command
 qse/tests/          the adversarial suite
 ```
 
