@@ -190,12 +190,43 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
     injected = {name: continuity.classify(prev, now, sleeps=sleeps)["kind"]
                 for name, (now, sleeps) in cases.items()}
 
+    # A REAL subject: watch a process we own, then catch it leaving. The recorder never
+    # misses a beat, so the ledger stays continuous while the thing it was watching dies
+    # -- which is the discrepancy the whole moonshot turns on.
+    subject_ledger = str(directory / "subject.jsonl")
+    proc = subprocess.Popen(["sleep", "5"])
+    try:
+        for _ in range(2):
+            continuity.beat(subject_ledger, interval=1.0,
+                            subject=continuity.subject_identity(proc.pid))
+            time.sleep(0.05)
+        proc.terminate()
+        proc.wait(timeout=5)
+        time.sleep(0.05)
+        continuity.beat(subject_ledger, interval=1.0,
+                        subject=continuity.subject_identity(proc.pid))
+    finally:
+        if proc.poll() is None:  # pragma: no cover - only if terminate/wait raced
+            proc.kill()
+    subject_report = continuity.verify(subject_ledger, sleeps=[], slack=0.1)
+
+    # An injected restart: the recorder stays on cadence while the subject's identity
+    # changes. Deterministic, so this half does not depend on timing.
+    subject_restart = continuity.classify_subject(
+        {"subject": {"name": "job", "pid": 10, "started": "t0"}},
+        {"subject": {"name": "job", "pid": 99, "started": "t9"}},
+    )["kind"]
+
     return {
         "real": {"ledger": real, "verdict": report["verdict"], "beats": report["beats"],
                  "chain_ok": report["chain_ok"], "counts": report["counts"],
                  "tail": report["tail"]},
         "tamper": {"verdict": tamper_report["verdict"], "chain_ok": tamper_report["chain_ok"]},
         "injected": injected,
+        "subject": {"ledger": subject_ledger, "verdict": subject_report["verdict"],
+                    "counts": subject_report["subject_counts"],
+                    "kinds": [row["kind"] for row in subject_report["subject_transitions"]],
+                    "injected_restart": subject_restart},
         "absences": continuity.absences(real),
         "power_sleeps_recorded": len(power.load()),
     }
@@ -212,7 +243,10 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
           and demo["tamper"]["verdict"] == "TAMPERED"
           and demo["injected"] == {"a machine that slept": "SLEPT",
                                    "a machine that rebooted": "REBOOT",
-                                   "a recorder that died": "HEARTBEAT_LOST"})
+                                   "a recorder that died": "HEARTBEAT_LOST"}
+          and demo["subject"]["verdict"] == "SUBJECT_BROKE"
+          and demo["subject"]["injected_restart"] == "SUBJECT_RESTARTED"
+          and "SUBJECT_OK" in demo["subject"]["kinds"])
 
     lines: list[str] = []
     lines.append("MOONSHOT-M  the machine that can attest its own continuity")
@@ -250,9 +284,11 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
     lines.append("   So the node keeps a hash-chained heartbeat and treats every gap as a")
     lines.append("   claim: the OS power log (not the process) says whether it slept, the")
     lines.append("   boot time says whether it restarted, and anything else is recorded as")
-    lines.append("   HEARTBEAT_LOST rather than rounded to fine. What did NOT change is")
-    lines.append("   recorded too, because 'the disk did not fill' is evidence a log of")
-    lines.append("   changes can never produce.")
+    lines.append("   HEARTBEAT_LOST rather than rounded to fine. It beats FOR a subject, and")
+    lines.append("   records the subject's identity at every beat, so 'the ledger never")
+    lines.append("   stopped' and 'the job never stopped' are told apart -- the recorder can")
+    lines.append("   stay continuous while the subject dies. What did NOT change is recorded")
+    lines.append("   too, because 'the disk did not fill' is evidence a log of changes cannot.")
     lines.append("")
 
     lines.append("4. THE WITNESS, RUN")
@@ -263,6 +299,11 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
                  f"(chain_ok {demo['tamper']['chain_ok']})")
     for name, kind in demo["injected"].items():
         lines.append(f"   injected history, {name:<26} -> {kind}")
+    lines.append(f"   subject (a real process we started, then ended):")
+    lines.append(f"     recorder verdict {demo['subject']['verdict']} -- the ledger never "
+                 f"missed a beat; subject counts {demo['subject']['counts']}")
+    lines.append(f"     identities seen: {', '.join(demo['subject']['kinds'])}; an injected "
+                 f"identity change -> {demo['subject']['injected_restart']}")
     lines.append("   absences (what did not change):")
     for row in demo["absences"]:
         state = "held steady" if not row["changed"] else "changed"
@@ -279,11 +320,12 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
     else:
         lines.append("   NOT YET: one of the demonstrations did not hold; see section 4.")
     lines.append("")
-    lines.append("   honest limits: this attests continuity of the RECORDER, not of any")
-    lines.append("   particular service; the sleep witness is the OS power log, so on a node")
-    lines.append("   whose log is rotated or suppressed a gap becomes HEARTBEAT_LOST -- an")
-    lines.append("   honest 'unknown', not a false 'continuous' -- and the chain cannot vouch")
-    lines.append("   for its own last line. See docs/moonshot-m.md.")
+    lines.append("   honest limits: it attests a DECLARED SUBJECT's continuity, watched through")
+    lines.append("   an independent probe (a process identity, or whatever the caller supplies);")
+    lines.append("   it does not attest that the subject did anything, and a subject the probe")
+    lines.append("   cannot see reads as SUBJECT_MISSING. The sleep witness is the OS power log,")
+    lines.append("   so a rotated or suppressed log turns a sleep into HEARTBEAT_LOST -- an")
+    lines.append("   honest 'unknown', never a false 'continuous'. See docs/moonshot-m.md.")
 
     payload = {
         "profile": dict(prof),

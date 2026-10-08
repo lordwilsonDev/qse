@@ -44,6 +44,12 @@ class TheMoonshotMachine(unittest.TestCase):
             "a machine that rebooted": "REBOOT",
             "a recorder that died": "HEARTBEAT_LOST",
         })
+        # The subject: a real process we started and ended. The recorder never stopped,
+        # and the record still reports the subject break -- the moonshot's whole point.
+        subject = payload["demo"]["subject"]
+        self.assertEqual(subject["verdict"], "SUBJECT_BROKE")
+        self.assertEqual(subject["injected_restart"], "SUBJECT_RESTARTED")
+        self.assertIn("SUBJECT_MISSING", subject["kinds"])
 
     def test_the_page_names_the_moonshot_and_its_verdict(self):
         out = io.StringIO()
@@ -53,6 +59,7 @@ class TheMoonshotMachine(unittest.TestCase):
         self.assertEqual(code, 0, page)
         self.assertIn("MOONSHOT-M", page)
         self.assertIn("THE INVERSE CAPABILITY HOLDS", page)
+        self.assertIn("SUBJECT_BROKE", page)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -7,6 +7,7 @@ never moved is recorded as evidence rather than dropped as silence.
 
 from __future__ import annotations
 
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -15,10 +16,11 @@ from ..witness import continuity, power
 from .support import Workspace, pin_clock
 
 
-def _beat(path, index: int, *, boot: float = 500.0, watches=None) -> None:
+def _beat(path, index: int, *, boot: float = 500.0, watches=None, subject=None) -> None:
     """A fully injected heartbeat, so a history can be replayed without waiting."""
     continuity.beat(path, wall=1_000.0 + index * 60.0, mono=index * 60.0,
-                    boot=boot, pid=1, interval=60.0, watches=watches or {})
+                    boot=boot, pid=1, interval=60.0, watches=watches or {},
+                    subject=subject)
 
 
 class TheBeatLedger(unittest.TestCase):
@@ -115,6 +117,63 @@ class TheAbsenceRecord(unittest.TestCase):
         self.assertFalse(rows["disk_free_gb"]["changed"])
         self.assertIn("evidence", rows["disk_free_gb"]["note"])
         self.assertTrue(rows["load"]["changed"])
+
+
+class TheSubjectTheRecordIsAbout(unittest.TestCase):
+    """The recorder staying up is not the same fact as the watched thing staying up."""
+
+    def setUp(self) -> None:
+        pin_clock()
+        self.ws = Workspace()
+        self.addCleanup(self.ws.close)
+        self.path = self.ws.ledger("w.jsonl")
+
+    def test_a_ledger_with_no_subject_is_still_continuous(self):
+        # backward compatibility: watching nothing is not watching something that broke
+        for i in range(3):
+            _beat(self.path, i)
+        report = continuity.verify(self.path, sleeps=[])
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+        self.assertEqual(report["subject_counts"], {"SUBJECT_UNWATCHED": 2})
+
+    def test_a_subject_that_leaves_breaks_the_verdict_though_the_recorder_never_stopped(self):
+        job = {"name": "job", "pid": 7, "started": "t0"}
+        _beat(self.path, 0, subject=job)
+        _beat(self.path, 1, subject=job)
+        _beat(self.path, 2, subject=None)  # the process ended; the recorder beat on
+        report = continuity.verify(self.path, sleeps=[])
+        self.assertEqual(report["counts"], {"CONTINUOUS": 2}, "the recorder never missed a beat")
+        self.assertEqual(report["verdict"], "SUBJECT_BROKE")
+        self.assertEqual(report["subject_counts"]["SUBJECT_MISSING"], 1)
+
+    def test_a_subject_that_leaves_and_returns_is_a_restart(self):
+        job = {"name": "job", "pid": 7, "started": "t0"}
+        back = {"name": "job", "pid": 7, "started": "t0"}
+        _beat(self.path, 0, subject=job)
+        _beat(self.path, 1, subject=job)
+        _beat(self.path, 2, subject=None)
+        _beat(self.path, 3, subject=back)
+        report = continuity.verify(self.path, sleeps=[])
+        self.assertEqual(report["verdict"], "SUBJECT_BROKE")
+        self.assertEqual(report["subject_counts"]["SUBJECT_RESTARTED"], 1)
+
+    def test_a_changed_identity_is_a_restart_and_the_same_one_is_not(self):
+        a = {"subject": {"name": "job", "pid": 7, "started": "t0"}}
+        same = {"subject": {"name": "job", "pid": 7, "started": "t0"}}
+        restarted = {"subject": {"name": "job", "pid": 9, "started": "t1"}}
+        self.assertEqual(continuity.classify_subject(a, same)["kind"], "SUBJECT_OK")
+        self.assertEqual(continuity.classify_subject(a, restarted)["kind"], "SUBJECT_RESTARTED")
+
+    def test_the_subject_probe_reads_a_live_process_and_none_once_it_ends(self):
+        proc = subprocess.Popen(["sleep", "5"])
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        alive = continuity.subject_identity(proc.pid)
+        self.assertIsNotNone(alive)
+        self.assertEqual(alive["pid"], proc.pid)
+        self.assertTrue(alive["started"], "a restart must not reproduce the start time")
+        proc.terminate()
+        proc.wait(timeout=5)
+        self.assertIsNone(continuity.subject_identity(proc.pid))
 
 
 class ThePowerLogWitness(unittest.TestCase):

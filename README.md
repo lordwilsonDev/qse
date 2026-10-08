@@ -95,12 +95,17 @@ tampered line rewritten -> verdict TAMPERED
 injected history, a machine that slept    -> SLEPT          (the OS power log explains it)
 injected history, a machine that rebooted -> REBOOT         (the boot time changed)
 injected history, a recorder that died    -> HEARTBEAT_LOST (nothing explains it)
+subject (a real process we started, then ended)
+  recorder verdict SUBJECT_BROKE -- the ledger never missed a beat
 ```
 
-It also keeps **absence as evidence**: a watched metric that never moved is reported with
-the same standing a change would get, because "the disk did not fill" is exactly what a log
-of changes can never show. The full inversions and the honest limits are in
-[docs/moonshot-m.md](docs/moonshot-m.md).
+It beats **for a subject**, recording the subject's identity at every beat, so "the ledger
+never stopped" and "the job never stopped" are told apart -- the recorder can stay
+continuous while the watched thing dies and returns (`SUBJECT_RESTARTED` / `SUBJECT_MISSING`
+→ verdict `SUBJECT_BROKE`). It also keeps **absence as evidence**: a watched metric that
+never moved is reported with the same standing a change would get, because "the disk did
+not fill" is exactly what a log of changes can never show. The full inversions and the
+honest limits are in [docs/moonshot-m.md](docs/moonshot-m.md).
 
 ## MOONSHOT-C — the same test on a cloud bill, in one script
 
@@ -261,7 +266,7 @@ cd ~/projects/qse
 python3 -B -W error::ResourceWarning -m unittest discover -s qse/tests -t .
 ```
 
-371 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
+376 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
 resolves) and so does `-B` (bytecode caches left in the tree are noise).
 
 ## The seven slots

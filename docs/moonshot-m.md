@@ -73,6 +73,15 @@ So the inverse capability is:
   power read is cached for 30s because the log is a six-figure-line dump and a witness
   that re-shells it every beat spends more time reading about the machine than watching
   it -- and a stale cache can only delay noticing a sleep, never invent one.
+- **The record is about a subject.** A heartbeat for a recorder is an answer to a
+  question nobody asked; what you want to know is whether *the thing you care about*
+  stopped. So every beat records the identity of a declared **subject** -- a process
+  identity `(name, pid, started)` from ``subject_identity``, or anything the caller
+  supplies -- and the verifier compares subjects across beats. The recorder can report a
+  perfectly continuous ledger while the subject dies and returns (`SUBJECT_RESTARTED`) or
+  vanishes (`SUBJECT_MISSING`), and the verdict becomes `SUBJECT_BROKE`. That is the
+  discrepancy the whole moonshot turns on, and it is caught by subject identity and not
+  by any gap in the recorder's clock.
 - **Absence is evidence.** A watched metric that never moved is computed and reported
   with the same standing a change would get, because "the disk did not fill" is exactly
   what a log of changes can never show.
@@ -93,6 +102,9 @@ $ python3 moonshot_machine.py
    injected history, a machine that slept    -> SLEPT
    injected history, a machine that rebooted -> REBOOT
    injected history, a recorder that died    -> HEARTBEAT_LOST
+   subject (a real process we started, then ended)
+     recorder verdict SUBJECT_BROKE -- the ledger never missed a beat
+     identities seen: SUBJECT_OK, SUBJECT_MISSING
    OS power witness: 0 sleep interval(s) in the log
 ```
 
@@ -100,11 +112,13 @@ Exit `0` when every demonstration holds, `1` when one does not, `2` for unusable
 
 ## Honest limits
 
-- **It attests the recorder's continuity, not a service's.** If the watched process is
-  replaced by a different one, the ledger will keep beating and the record will be
-  continuous; the ledger carries a `pid` so a reader can *see* the change, but nothing
-  forces the two to be the same program. Binding a service to the record is the next
-  question, not a control shipped here.
+- **It attests a declared subject's continuity, watched through a probe.** The subject's
+  identity is whatever the caller supplies -- by default a process identity from `ps`,
+  `(name, pid, started)`. What it still does not attest: that the subject *did* anything,
+  or that a subject the probe cannot see exists at all. An unreadable subject reads as
+  `SUBJECT_MISSING` -- an honest "I could not see it" -- never as "it is fine". And the
+  identity is only as good as its fields: `pid` alone can be reused, which is why the
+  start time is carried with it.
 - **The sleep witness is the OS power log.** On a node whose log is rotated, suppressed,
   or on a non-Mac, a sleep becomes `HEARTBEAT_LOST` -- an honest "unknown", never a
   false "continuous". That direction is deliberate: the failure mode of the witness is

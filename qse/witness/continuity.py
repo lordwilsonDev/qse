@@ -44,6 +44,16 @@ SLACK = 5.0
 
 KINDS = ("CONTINUOUS", "SLEPT", "REBOOT", "HEARTBEAT_LOST")
 
+#: How a *watched subject's* identity moved between two beats. Separate from the
+#: recorder's own gap kinds because the two can disagree in the way that matters: a
+#: recorder can keep beating perfectly while the thing it was watching dies and returns.
+SUBJECT_KINDS = ("SUBJECT_UNWATCHED", "SUBJECT_OK", "SUBJECT_RESTARTED",
+                 "SUBJECT_MISSING", "SUBJECT_APPEARED")
+
+#: The fields of a subject identity that must not change across a restart. A pid can be
+#: reused; a start time cannot be reproduced by a new process, so both are kept.
+SUBJECT_FIELDS = ("name", "pid", "started")
+
 _BOOT = re.compile(r"sec\s*=\s*(\d+),\s*usec\s*=\s*(\d+)")
 
 
@@ -75,6 +85,7 @@ def beat(
     boot: float | None = None,
     pid: int | None = None,
     watches: Mapping[str, Any] | None = None,
+    subject: Mapping[str, Any] | None = None,
     interval: float = DEFAULT_INTERVAL,
     note: str = "",
 ) -> dict[str, Any]:
@@ -84,9 +95,15 @@ def beat(
     process was *frozen* (wall advanced, monotonic did not) or merely *slow* -- a
     second, clock-based witness alongside the OS power log. Every clock is injectable
     so a test can replay a history without waiting for one.
+
+    ``subject`` is the identity of whatever this beat is a heartbeat *for* -- a job, a
+    service, a process (``subject_identity`` reads one from the OS). Recorded at every
+    beat rather than once, because a subject that dies and returns is only visible as a
+    change across beats; compare with ``classify_subject``.
     """
     record = {
         "ev": BEAT,
+        "subject": dict(subject) if subject else None,
         "wall": round(float(time.time() if wall is None else wall), 6),
         "mono": round(float(time.monotonic() if mono is None else mono), 6),
         "boot": boot if boot is not None else boot_time(),
@@ -96,6 +113,69 @@ def beat(
         "note": str(note),
     }
     return chain.append(path, record)
+
+
+def subject_identity(pid: int) -> dict[str, Any] | None:
+    """A process's identity, as the OS reports it *now*. ``None`` when it is gone.
+
+    The identity is ``(name, pid, started)`` because a restart cannot reproduce it: a
+    pid can be reused, but ``lstart`` is fixed for the life of a process and changes
+    when a new process takes the pid. The recorder is expected to call this at every
+    beat rather than cache a pid -- the recorder staying alive is not the same fact as
+    the watched thing staying alive, and this is what lets the two be told apart.
+    """
+    try:
+        done = subprocess.run(
+            ["ps", "-o", "pid=,lstart=,comm=", "-p", str(int(pid))],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if done.returncode != 0 or not done.stdout.strip():
+        return None
+    line = done.stdout.strip().splitlines()[0].strip()
+    head, _, rest = line.partition(" ")
+    if not head.isdigit():
+        return None
+    fields = rest.split()
+    started = " ".join(fields[:5])
+    command = " ".join(fields[5:]) or "process"
+    return {"name": command, "pid": int(head), "started": started}
+
+
+def subject_token(subject: Mapping[str, Any] | None) -> tuple[str, ...] | None:
+    """The part of a subject identity that must not change. ``None`` when unwatched."""
+    if not subject:
+        return None
+    return tuple(str(subject.get(field, "")) for field in SUBJECT_FIELDS)
+
+
+def classify_subject(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dict[str, Any]:
+    """Name what happened to the *watched subject* between two beats.
+
+    Distinct from ``classify``, which is about the recorder. The disagreement between
+    the two is the finding this exists for: the recorder can report a perfectly
+    continuous ledger while the subject it was watching died and came back, and only a
+    comparison of subject identity catches it. That is the whole point of binding a
+    subject at all -- otherwise "the ledger never stopped" is an answer to a question
+    nobody asked.
+    """
+    before = subject_token(previous.get("subject"))
+    after = subject_token(current.get("subject"))
+    if before is None and after is None:
+        return {"kind": "SUBJECT_UNWATCHED", "why": "no subject is being watched"}
+    if before is None:
+        return {"kind": "SUBJECT_APPEARED", "after": list(after),
+                "why": "watching began at this beat"}
+    if after is None:
+        return {"kind": "SUBJECT_MISSING", "before": list(before),
+                "why": "the watched subject was not present at this beat, so the recorder "
+                       "kept beating while the subject did not"}
+    if before == after:
+        return {"kind": "SUBJECT_OK", "why": "the same subject identity at both beats"}
+    return {"kind": "SUBJECT_RESTARTED", "before": list(before), "after": list(after),
+            "why": "the subject's identity changed between beats: the recorder survived a "
+                   "restart of the thing it was watching"}
 
 
 def classify(
@@ -159,6 +239,9 @@ def verify(
         "transitions": [],
         "counts": {},
         "lost": [],
+        "subject_transitions": [],
+        "subject_counts": {},
+        "subject_breaks": [],
         "power_sleeps": None,
         "verdict": "EMPTY",
     }
@@ -183,10 +266,36 @@ def verify(
     result["counts"] = counts
     result["lost"] = [row for row in transitions if row["kind"] == "HEARTBEAT_LOST"]
 
+    # The subject's continuity, which is a different question from the recorder's. A
+    # subject that leaves the record and comes back is a restart even though the
+    # recorder never missed a beat, so a later APPEARED is relabelled RESTARTED.
+    subject_rows: list[dict[str, Any]] = []
+    had_subject = False
+    for previous, current in zip(beats, beats[1:]):
+        row = classify_subject(previous, current)
+        if row["kind"] == "SUBJECT_APPEARED" and had_subject:
+            row["kind"] = "SUBJECT_RESTARTED"
+            row["why"] = ("the subject left the record and came back: a restart the "
+                          "recorder survived")
+        if current.get("subject"):
+            had_subject = True
+        subject_rows.append(row)
+    result["subject_transitions"] = subject_rows
+    subject_counts: dict[str, int] = {}
+    for row in subject_rows:
+        subject_counts[row["kind"]] = subject_counts.get(row["kind"], 0) + 1
+    result["subject_counts"] = subject_counts
+    result["subject_breaks"] = [
+        row for row in subject_rows
+        if row["kind"] in ("SUBJECT_RESTARTED", "SUBJECT_MISSING")
+    ]
+
     if not beats:
         result["verdict"] = "EMPTY"
     elif result["lost"]:
         result["verdict"] = "BROKEN"
+    elif result["subject_breaks"]:
+        result["verdict"] = "SUBJECT_BROKE"
     else:
         result["verdict"] = "CONTINUOUS"
     return result
