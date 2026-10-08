@@ -76,8 +76,11 @@ def _median(values: Sequence[float]) -> float | None:
 def default_rule(spec: BuildSpec, evidence: Iterable[Evidence] = ()) -> dict:
     """A threshold rule, preferring one that was actually measured.
 
-    Order of preference: a rule a runner reported verbatim; a field and threshold
-    a runner observed; then a conservative fallback that names itself unvalidated.
+    Order of preference: a rule a runner reported verbatim; a field and threshold a
+    runner observed for this hypothesis; a field a *discrimination scan* decided on
+    and measured a cut for; then a conservative fallback that names itself
+    unvalidated. Measured beats constructed at every level, and a construction is
+    never dressed as a measurement.
     """
     ranked = sorted(
         (
@@ -117,6 +120,41 @@ def default_rule(spec: BuildSpec, evidence: Iterable[Evidence] = ()) -> dict:
                 "validated": True,
             }
 
+    # A scan that *decided* names the candidate it decided on, and every candidate
+    # carries the cut that produced its separation. That is the engine's only route
+    # from "which explanation" to "what rule", so it is read explicitly here rather
+    # than picked off whichever piece of evidence happens to sort first. A scan that
+    # could not decide reports ``detector: None`` and names its contenders instead,
+    # and is skipped exactly as an unmeasured runner is: it measured the candidates
+    # and was not entitled to name one, so naming one here would be construction.
+    for item in ranked:
+        observed = item.observed
+        detector = observed.get("detector") if isinstance(observed, Mapping) else None
+        if not isinstance(detector, Mapping):
+            continue
+        field = detector.get("field")
+        threshold = detector.get("threshold")
+        if (not isinstance(field, str) or not field or field in outcomes
+                or not isinstance(threshold, (int, float))):
+            continue
+        op = detector.get("op")
+        operator = op if op in VALID_OPS else ">="
+        return {
+            "field": field,
+            "op": operator,
+            "threshold": float(threshold),
+            "action": "escalate",
+            "basis": (
+                f"the discrimination scan over {item.source} decided on {field!r} "
+                f"(separation {observed.get('best_separation')}, margin "
+                f"{observed.get('margin')} over {observed.get('runner_up')!r}) and "
+                f"measured the cut {field} {operator} {float(threshold)} (evidence "
+                f"{item.eid}); the field comes from a measurement on that source, not "
+                "from a choice made by construction"
+            ),
+            "validated": item.kind in ("MEASURED", "REPRODUCED"),
+        }
+
     numbers: list[float] = []
     for item in ranked:
         if isinstance(item.observed, Mapping):
@@ -129,17 +167,40 @@ def default_rule(spec: BuildSpec, evidence: Iterable[Evidence] = ()) -> dict:
     # chosen by construction rather than by measurement -- and could win the control
     # arm by alphabetical luck, which is not evidence that questioning worked.
     threshold = _median(numbers)
+    # Nothing measured a field. Two ways that happens, and they are different
+    # findings: no runner reached the bar at all, or a scan reached the bar and
+    # could not separate the candidates it ranked (its ``contenders`` name them).
+    # Both produce a detector-less artifact, and the basis says which happened.
+    undecided = [item for item in ranked if isinstance(item.observed, Mapping)
+                 and item.observed.get("decided") is False]
+    if undecided:
+        observed = undecided[0].observed
+        ranking = observed.get("ranking") or [{}]
+        best = (ranking[0] or {}).get("column")
+        contenders = ", ".join(
+            f"{row.get('column')} (separation {row.get('separation')}, cut "
+            f"{row.get('column')} {row.get('op')} {row.get('threshold')})"
+            for row in (observed.get("contenders") or ())
+        ) or "nothing measurable"
+        basis = (
+            f"unvalidated: the discrimination scan over {undecided[0].source} could not separate "
+            f"its best candidate {best!r} (separation {observed.get('best_separation')}) from "
+            f"{contenders}, so no field is named -- naming one here would be a choice by "
+            "construction rather than by measurement"
+        )
+    else:
+        basis = (
+            "unvalidated: no usable measured evidence exists, so this artifact carries no "
+            "detector -- there is no field the run is entitled to flag on, and inventing "
+            "one would be a rule chosen by construction rather than by measurement"
+        )
     return {
         "field": None,
         "detector": False,
         "op": ">=",
         "threshold": round(threshold, 4) if threshold is not None else FALLBACK_THRESHOLD,
         "action": "escalate",
-        "basis": (
-            "unvalidated: no usable measured evidence exists, so this artifact carries no "
-            "detector -- there is no field the run is entitled to flag on, and inventing "
-            "one would be a rule chosen by construction rather than by measurement"
-        ),
+        "basis": basis,
         "validated": False,
     }
 

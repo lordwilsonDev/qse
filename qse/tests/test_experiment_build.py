@@ -222,6 +222,72 @@ class RunnersRefuseRatherThanInvent(unittest.TestCase):
         self.assertEqual(first["observed"], second["observed"])
 
 
+class TheScanReportsItsMeasurement(unittest.TestCase):
+    """The scan's cut, its decision, and what it could not separate.
+
+    The cut used to be computed by ``_youden`` and then thrown away, which left the
+    engine able to rank explanations and unable to turn a ranking into a rule. Every
+    test here is about the measurement surviving the runner.
+    """
+
+    def setUp(self) -> None:
+        pin_clock()
+
+    def _scan(self, dataset, candidates="handoffs,precursor_h,message_volume,queue_wait_h") -> dict:
+        item = experiment(runner="discrimination_scan",
+                          required_data=("outcome=failed", f"candidates={candidates}"))
+        result = runner.run(item, dataset)
+        self.assertTrue(result["ran"], result.get("reason"))
+        return result["observed"]
+
+    def test_every_candidate_carries_the_cut_that_produced_its_separation(self):
+        observed = self._scan(orders())
+        for row in observed["ranking"]:
+            self.assertIn("threshold", row, "the cut behind a separation must survive")
+            if row["n"] >= 4:
+                self.assertEqual(row["op"], ">=")
+                self.assertIsNotNone(row["threshold"])
+                self.assertIn("sensitivity", row)
+                self.assertIn("specificity", row)
+            else:
+                self.assertIsNone(row["threshold"], "a candidate with no pairs has no cut")
+
+    def test_the_reported_cut_is_the_cut_that_measured_that_separation(self):
+        # the number and the cut have to agree, or the ranking is decoration
+        from ..baseline import score_rule
+
+        rows = rows_of()
+        for row in self._scan(orders())["ranking"]:
+            if row.get("threshold") is None:
+                continue
+            scored = score_rule({"field": row["column"], "op": row["op"],
+                                 "threshold": row["threshold"]}, rows, outcome="failed")
+            self.assertTrue(scored["scored"], row)
+            self.assertAlmostEqual(scored["youden"], row["separation"], places=4,
+                                   msg=f"{row['column']}: the ranking and its cut disagree")
+
+    def test_an_inconclusive_scan_names_the_contenders_it_could_not_separate(self):
+        observed = self._scan(orders())
+        self.assertFalse(observed["decided"])
+        self.assertIsNone(observed["favours"])
+        self.assertIsNone(observed["detector"])
+        self.assertTrue(observed["contenders"], "a refusal must name what it refused to separate")
+        for contender in observed["contenders"]:
+            self.assertIsNotNone(contender["threshold"])
+            self.assertLess(abs(observed["best_separation"]) - abs(contender["separation"]),
+                            runner.DISCRIMINATION_MARGIN_FLOOR,
+                            "only candidates inside the floor are contenders")
+
+    def test_a_source_that_decides_reports_the_rule_it_decided_on(self):
+        holdout = runner.Dataset(name="orders_holdout", rows=rows_of("orders_holdout.json"))
+        observed = self._scan(holdout)
+        self.assertTrue(observed["decided"])
+        self.assertEqual(observed["favours"], "handoffs")
+        self.assertEqual(observed["detector"],
+                         {"field": "handoffs", "op": ">=", "threshold": 6.0})
+        self.assertEqual(observed["contenders"], [], "a decision has nothing left to name")
+
+
 class ResultsBecomeEvidence(unittest.TestCase):
     def setUp(self) -> None:
         pin_clock()
@@ -319,6 +385,57 @@ class SpecificationAndGeneration(unittest.TestCase):
                           "with no measured field the honest artifact is detector-less")
         self.assertFalse(rule["detector"])
         self.assertFalse(rule["validated"], "a fallback is not measured")
+
+    def _scan_evidence(self, *, decided: bool, source: str = "orders_holdout"):
+        """One discrimination scan, as evidence, in both of its honest shapes."""
+        from ..core.evidence import make_evidence
+
+        observed = {
+            "outcome": "failed",
+            "excluded_circular": ["failed"],
+            "ranking": [{"column": "handoffs", "separation": 0.9157, "n": 400,
+                         "op": ">=", "threshold": 6.0, "sensitivity": 0.9157,
+                         "specificity": 1.0}],
+            "favours": "handoffs" if decided else None,
+            "decided": decided,
+            "detector": ({"field": "handoffs", "op": ">=", "threshold": 6.0}
+                         if decided else None),
+            "contenders": ([] if decided else [
+                {"column": "precursor_h", "separation": 0.8719, "op": ">=", "threshold": 6.0}]),
+            "best_separation": 0.9157,
+            "margin": 0.6041,
+            "runner_up": "precursor_h",
+        }
+        return make_evidence(
+            "candidate explanations were ranked against the outcome",
+            hypothesis=self.h.hid, kind="MEASURED", source=source,
+            method="discrimination_scan: ranking candidate explanations by separation",
+            collected_at="2026-10-07T12:00:00Z", observed=observed,
+        )
+
+    def test_a_scan_that_decided_is_how_the_builder_names_a_field(self):
+        item = self._scan_evidence(decided=True)
+        spec = specification.from_hypothesis(self.h, [item])
+        rule = generator.default_rule(spec, [item])
+        self.assertEqual(rule["field"], "handoffs")
+        self.assertEqual(float(rule["threshold"]), 6.0)
+        self.assertTrue(rule["validated"], "a measured decision is a measurement")
+        self.assertIn("decided on 'handoffs'", rule["basis"])
+        self.assertIn("orders_holdout", rule["basis"],
+                      "the basis names which source named the field")
+        self.assertIn("handoffs", spec.inputs, "the detector column is an artifact input")
+
+    def test_a_scan_that_could_not_decide_leaves_the_artifact_detector_less_and_says_why(self):
+        item = self._scan_evidence(decided=False)
+        spec = specification.from_hypothesis(self.h, [item])
+        rule = generator.default_rule(spec, [item])
+        self.assertIsNone(rule["field"], "a scan that could not separate them names neither")
+        self.assertFalse(rule["detector"])
+        self.assertFalse(rule["validated"])
+        self.assertIn("could not separate its best candidate 'handoffs'", rule["basis"])
+        self.assertIn("precursor_h", rule["basis"], "the contender is named, not implied")
+        self.assertNotIn("no usable measured evidence exists", rule["basis"],
+                         "a scan did reach the bar; that is a different finding")
 
     def test_the_generated_module_is_valid_python(self):
         spec = specification.from_hypothesis(self.h, self.evidence)

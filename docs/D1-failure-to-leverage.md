@@ -256,10 +256,189 @@ the next question is recorded above. Closed at `LEVERAGE_CAPTURED`.
 
 ---
 
+# D1 — Failure-to-Leverage: the scan that measured the mechanism and could not name it
+
+Status: **LEVERAGE_CAPTURED**
+Date: 2026-10-08
+Method source: BlackSwanLabz Research Lab, *D1 — Failure-to-Leverage Compiler*.
+
+## research id
+
+`qse-d1-0003` — a runner computed its decisive number, reported a decision, and the
+number was thrown away before anything could consume it.
+
+## problem
+
+`qse.cli compare` still reported the engineered arm as **unscoreable** ("the rule
+names no field") even though the run's own ledger held a `discrimination_scan` that
+had **decided**. On the second source that scan reported `favours: "handoffs"`,
+separation `0.9157`, margin `0.6041` over `precursor_h`. The engine had measured the
+mechanism and named it; the artifact still said "no detector".
+
+## observed event
+
+`discrimination_scan` called `_youden(pairs)` — which returns
+`(j, threshold, sensitivity, specificity, n)` — and unpacked
+`separation, _, _, _, count`. The cut that produced the separation was computed and
+discarded. `default_rule`'s branches need a `field` and a numeric `threshold`; the
+scan reported neither, so it fell through to the detector-less fallback whose basis
+said "no usable measured evidence exists" — which was false about the run it was
+summarising.
+
+## assumptions (all checked)
+
+- A decision rule needs a field and a numeric threshold. A *separation* is not a
+  rule, so the runner's output was not yet consumable.
+- `_youden` already computes the cut and the two rates. Supplying them requires no
+  new statistic and no second computation, so nothing has to be invented to close
+  the gap.
+- A margin below `DISCRIMINATION_MARGIN_FLOOR` means the data cannot choose. That is
+  a real finding, and it is different from `favours: None` standing in for "no
+  candidates".
+
+## variables and provenance
+
+- target failure, not environment or measurement failure;
+- provenance: `qse/experiment/runner.py::discrimination_scan`,
+  `qse/build/generator.py::default_rule`,
+  `qse/build/specification.py::{measured_columns,favours}`.
+
+## failure (retained)
+
+The detector-less artifact `ART-e7bbfd82cf0b` and its ledger are kept. So is the
+observation that is the point of this entry: a run that measured `handoffs` at
+J `0.8719` on the fitting sample and `0.9157` on a second source **still emitted no
+detector**, and every check in the apparatus passed.
+
+## inversion
+
+| Assumption treated as settled | Inverted |
+|---|---|
+| "A separation is a measurement; a rule is a construction." | "A separation *is* a rule with its cut attached — reporting one without the other is a measurement half-made." |
+| "If the scan cannot decide, the engine cannot name a field." | "True — and it must then *say* what it could not separate. Silence is not a refusal; it is indistinguishable from finding nothing." |
+| "Evidence is whatever the runner returned." | "A runner that throws away its own decisive number has not returned its evidence." |
+
+## missing variable
+
+**The cut.** The scalar the runner reported (`separation`) was never the thing the
+builder needed (`field`, `op`, `threshold`), and nothing in the pipeline noticed the
+gap because both were "a measurement".
+
+## causal attribution
+
+The defect is in the **runner's return value** (discarding `_youden`'s threshold),
+amplified by the **builder's vocabulary** (`default_rule` could consume a field and a
+threshold but never a decision). It is *not* in the ledger, the fixture, or the
+verifier. A correct number that cannot be consumed is still a defect, and the
+attribution is recorded rather than left to read as a fixture problem.
+
+## leverage — the controls
+
+1. **`discrimination_scan` reports the cut behind every candidate's separation**
+   (`op`, `threshold`, `sensitivity`, `specificity`), from the same `_youden` call —
+   no second statistic, so the ranking and the cut cannot disagree by construction.
+2. **It reports `decided`, and `detector`** when it decided: the rule the
+   measurement implies, so a consumer reads a decision instead of reconstructing one
+   from a ranking by convention.
+3. **It reports `contenders`** when it did not decide — the candidates inside the
+   margin floor of the best — so a refusal names what it refused to separate.
+4. **`default_rule` gains an explicit branch** that consumes a scan's `detector`. It
+   sits *after* the two branches that name a rule measured for this hypothesis, so
+   precedence only widens, and its `basis` records the source that decided, the
+   separation and the margin over the runner-up. A scan that did not decide is
+   skipped exactly as an unmeasured runner is.
+5. **The fallback's `basis` distinguishes two findings**: nothing measured at all,
+   versus a scan that measured and could not separate. The second names the best
+   candidate and its contenders.
+6. **`measured_columns` reads `favours`**, so the artifact's `inputs` name the column
+   it actually reads. Before this the artifact declared the whole table as its input
+   while reading one column of it — a smaller lie of the same shape as the big one.
+7. **`compare` prints a field-provenance block**, read from the run's own ledger, and
+   `_detector_provenance` refuses to state the win without saying which source named
+   the field and which could not.
+
+Ranked by impact × recurrence × generality ÷ cost: controls 1–2 score highest — they
+close the class "a runner computes its decisive number and drops it" everywhere, at
+the cost of one unpack. 3–5 are the honesty of refusals. 6 fixes a second, smaller
+misstatement. 7 is the disclosure the win requires, and it is what makes the win
+readable rather than merely true.
+
+## downstream dependencies
+
+`qse.cli compare/selftest/checks`, the engine's build stage, `CLAIMS.md` C-003
+(retracted) and C-010–C-012, and the whole suite. All re-verified after the change.
+
+## tests (reusable)
+
+- `test_experiment_build.TheScanReportsItsMeasurement.test_every_candidate_carries_the_cut_that_produced_its_separation`
+- `test_experiment_build.TheScanReportsItsMeasurement.test_the_reported_cut_is_the_cut_that_measured_that_separation`
+- `test_experiment_build.TheScanReportsItsMeasurement.test_an_inconclusive_scan_names_the_contenders_it_could_not_separate`
+- `test_experiment_build.TheScanReportsItsMeasurement.test_a_source_that_decides_reports_the_rule_it_decided_on`
+- `test_experiment_build.SpecificationAndGeneration.test_a_scan_that_decided_is_how_the_builder_names_a_field`
+- `test_experiment_build.SpecificationAndGeneration.test_a_scan_that_could_not_decide_leaves_the_artifact_detector_less_and_says_why`
+- `test_baseline.TheArmComparison.test_the_shipped_fixture_is_scored_and_the_engineered_arm_wins_on_the_second_source`
+- `test_baseline.TheArmComparison.test_the_engineered_arm_with_no_detector_is_reported_and_not_credited`
+
+The **second control direction**, which D1 #2's lesson demands: a fix that only
+widens is not a fix. `test_the_reported_cut_is_the_cut_that_measured_that_separation`
+scores the reported cut on the same rows and requires it to reproduce the reported
+separation; the uncredited control builds a fixture that is separable *and* on which
+no source decides, and requires the refusal to still refuse.
+
+## steel (the boundary checks)
+
+- **Boundary:** only the runner's return value and the builder's consumption changed;
+  no data, fixture or statistic was altered to make the result.
+- **The comparison's own boundary, stated plainly:** the field is named by the scan
+  over the **second source**, not the fitting one. On the fitting source the same scan
+  cannot separate `handoffs` (`0.8719`) from `precursor_h` (`0.8719`) and
+  `message_volume` (`0.8393`). So this is **not a single-table win**, and `compare`
+  now says so in its own output rather than leaving it to this document. The
+  engineered arm's advantage is that it ran the discriminating experiment on a second
+  source before naming a mechanism — which is what the scenario's own `obligation`
+  demanded ("must prove the precursor generalises across shifts and regions"). The
+  naive arm is given one period. That asymmetry is the finding, not a hidden
+  convenience.
+- **Measurement context:** obtained under a frozen clock; the verdict is clock-free.
+- **Observer:** the session changed QSE's own runner while auditing QSE's own
+  comparison — a target failure. The run's ledger was inspected first, which is what
+  showed the second source's scan had already decided.
+- **Is-the-win-real test:** the engineered rule `handoffs >= 6.0` scores J `+0.9157`
+  on the holdout with specificity `1.0`; the naive arm's `staff_on_shift <= 6.0`
+  collapses to `−0.028`. Both arms are scored by the same statistic, at each rule's
+  own threshold.
+- **Is-the-cut-rigged test:** the cut the scan took came from the source that decided.
+  The fitting sample's own best cut for the same column is also `6.0`, so nothing
+  about the threshold differs between the two periods — but the honest statement is
+  that the cut was measured on the deciding source, not that it was validated on both.
+
+## new question (the compiler's real output)
+
+> The artifact is titled for the winning hypothesis (`MEASUREMENT`/`TELEMETRY` — "the
+> data is insufficient to support ...") while its rule sits on a field that
+> hypothesis does not mention. Its `basis` records where the field came from, so the
+> disagreement is visible; nothing forces the artifact's title, its acceptance
+> criteria and its detector to be about the same explanation. Should a detector that
+> names a field be built for the hypothesis whose mechanism that field is, even when
+> another hypothesis won the synthesis?
+
+That question did not exist before this failure.
+
+## stopping condition
+
+No currently identified influential unknown remains untested at this boundary, and
+the next question is recorded above. Closed at `LEVERAGE_CAPTURED`.
+
+---
+
 ## Answered since (cross-reference)
 
-The first entry's new question — "should the engine emit a detector at all, or an
-explicit *no usable detector* artifact?" — is answered in the no-detector
-direction: with nothing measured, the artifact now says so (`field: None`,
-`validated: False`) instead of inventing a field. The mechanism-based detector
-remains open.
+- Entry #1's new question — "should the engine emit a detector at all, or an explicit
+  *no usable detector* artifact?" — is answered twice over. With nothing measured the
+  artifact says so (`field: None`, `validated: False`) instead of inventing a field;
+  and with a scan that decided, the engine now **does** emit a mechanism detector
+  (`field: handoffs`, `validated: True`) instead of a detector-less one. The
+  mechanism-based detector is no longer open.
+- Entry #2's new question — should each run carry a run/session id, so an id repeated
+  *within* one run can be told from a repeat across runs? — remains open. The ledger
+  still holds a history rather than a run.

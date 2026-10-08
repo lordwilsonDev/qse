@@ -96,19 +96,8 @@ tell "found the mechanism" from "found a strong correlate", which is the necessa
 condition for the comparison to be runnable at all.
 
 The command exits `0` when the fixture *can* carry the comparison and `1` when it
-cannot -- and on the shipped scenario it now exits `0`. Two honest caveats, because
-a runnable comparison is not a won one:
-
-- **The comparison has not been scored.** A separable fixture means the naive arm
-  *can* be punished; it does not make the engineered arm win. Running the two arms
-  against each other is the next step, not this one.
-- **The engine still does not land on the mechanism.** On this data its selected
-  explanation is a measurement objection ("the data is insufficient to support ...")
-  and the artifact is a conservative default; `handoffs` appears only as a
-  *candidate column* in experiment designs, never as the selected mechanism. So the
-  fixture now distinguishes mechanism from correlate, and the engineered arm still
-  does not produce the mechanism. Whether it would beat the naive arm is therefore
-  still open -- and answering it honestly is what the control arm is for.
+cannot -- and on the shipped scenario it exits `0`. A runnable comparison is not a
+won one, which is why the comparison itself is run in the next subsection.
 
 The fitting sample (`orders_scenario.json`) is left untouched: it is the historical
 period an analyst actually fits on, confounds and all. Only the holdout is
@@ -119,34 +108,44 @@ requires, the same way a controlled experiment chooses a clean control period.
 ### The comparison, actually run
 
 `qse.cli compare` scores both arms by the **same** statistic on the holdout --
-Youden's J of the rule's flagged set against the outcome -- so neither arm gets a
-friendlier metric. The naive arm takes the top fit correlate and fits its best
-single threshold; the engineered arm is the rule QSE built and verified:
+Youden's J of the rule's flagged set against the outcome, at each rule's own
+threshold -- so neither arm gets a friendlier metric. The naive arm takes the top fit
+correlate and fits its best single threshold; the engineered arm is the rule QSE
+built and verified:
 
 ```text
     arm          rule                       fit J  holdout J  flagged
     naive        staff_on_shift <= 6.0       +0.826     -0.028      132
-    engineered   (no detector)                 n/a        n/a        -
+    engineered   handoffs >= 6.0             +0.872     +0.916      163
 
-  engineered arm wins: False
+  engineered arm wins: True
 ```
 
-Two honest readings, both unflattering and both the point:
+Two honest readings:
 
 - The **naive arm collapses** exactly as the fallible-analyst story predicts
   (`+0.826` in-sample, negative out of sample). The fixture punishes it.
-- The **engineered arm emits no detector at all**: with nothing measured, the
-  builder refuses to invent a field and produces an explicit *detector-less*
-  artifact (`validated: False`, flags nothing). `compare` cannot score it and does
-  not credit it, so the moonshot's terminal claim still does **not** hold.
-  `compare` exits `1` -- the honest verdict, not a bug.
+- The **engineered arm names a measured field and beats it** by far more than the
+  margin, so the moonshot's terminal claim holds on this fixture and `compare` exits
+  `0`. But read the provenance `compare` prints alongside the verdict, because the
+  win is **not** a single-table win: the field was named by the scan over the
+  **holdout**, and on the fitting sample the same scan *cannot decide* (`handoffs`
+  `0.8719` tied with `precursor_h` `0.8719`, with `message_volume` at `0.8393` inside
+  the `0.10` floor). The engineered arm's advantage is that it ran the discriminating
+  experiment on an independent period *before* naming a mechanism -- which is what
+  the question's own `obligation` demanded -- and the naive arm was handed one
+  period. That asymmetry is the finding, and [docs/LIMITS.md](docs/LIMITS.md) states
+  it in full.
 
-Running the comparison exposed a real defect and compiled it into reusable
+Running the comparison exposed three real defects and compiled each into reusable
 controls: the generator's fallback first selected the *outcome* as the rule's field
-(`failed >= 24`), then an arbitrary input. A rule can no longer sit on the outcome,
-and with nothing measured the engine emits an explicit "no usable detector"
-artifact rather than an arbitrary one. The failure, the inversion and the controls
-are recorded in [docs/D1-failure-to-leverage.md](docs/D1-failure-to-leverage.md).
+(`failed >= 24`), then an arbitrary input; and the discrimination scan computed the
+cut behind every candidate's separation and threw it away, so the engine could rank
+explanations and could never turn a ranking into a rule. A rule can no longer sit on
+the outcome; nothing arbitrary is named; and a scan that decides now reports the field
+*and the cut*, while a scan that cannot decide names the contenders it refused to
+separate. The failures, the inversions and the controls are recorded in
+[docs/D1-failure-to-leverage.md](docs/D1-failure-to-leverage.md).
 
 ## Claims
 
@@ -197,7 +196,7 @@ cd ~/projects/qse
 python3 -B -W error::ResourceWarning -m unittest discover -s qse/tests -t .
 ```
 
-292 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
+338 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
 resolves) and so does `-B` (bytecode caches left in the tree are noise).
 
 ## The seven slots

@@ -180,14 +180,14 @@ The limit that remains: a ledger carries no run/session id, so an id repeated
 same id emitted by a second run. Telling them apart needs a run id, which is the
 next question recorded in the D1 entry, not a control shipped here.
 
-## The fixture can now carry the moonshot's terminal test -- but it has not been scored
+## The fixture carries the moonshot's terminal test, and the comparison is scored
 
 The terminal test -- *does engineered questioning create measurable capability
 that would not otherwise exist* -- is a comparison, so it needs a counterfactual.
 `qse.cli fixture` supplies the cheapest one (an analyst with no question
 engineering takes the top correlate) and asks whether this fixture can punish it.
 
-It can now. The holdout is generated (`scripts/generate_holdout.py`) as a period in
+It can. The holdout is generated (`scripts/generate_holdout.py`) as a period in
 which the fitting-sample confounds are absent, so every column that outranks the
 driver on the fit collapses on data the fit never saw:
 
@@ -198,55 +198,91 @@ precursor_h       fit +0.798   holdout +0.351
 handoffs          fit +0.798   holdout +0.839   <- the planted driver
 ```
 
-`SEPARABLE: True`, exit 0. That is the necessary condition for the comparison to be
-runnable, and it is all it is: a separable fixture means the naive arm *can* be
-punished, not that the engineered arm wins.
+`SEPARABLE: True`, exit 0. A separable fixture means the naive arm *can* be
+punished; it does not by itself mean the engineered arm wins.
 
-The comparison has now been **run** (`qse.cli compare`), scoring both arms by the
-same statistic -- Youden's J of the rule's flagged set against the outcome -- on the
-holdout:
+The comparison has been **run** (`qse.cli compare`), scoring both arms by the same
+statistic -- Youden's J of the rule's flagged set against the outcome, at each
+rule's own threshold -- on the holdout:
 
 ```text
 arm          rule                       fit J  holdout J  flagged
 naive        staff_on_shift <= 6.0       +0.826     -0.028      132
-engineered   (no detector)                 n/a        n/a        -
+engineered   handoffs >= 6.0             +0.872     +0.916      163
 ```
 
 The naive arm collapses (`+0.826` in-sample, negative out of sample), which is the
-fixture working as intended. The engineered arm is not scored at all: with no
-measured field the builder emits an explicit **detector-less** artifact
-(`validated: False`, flags nothing) rather than inventing one, and `compare` neither
-scores nor credits it. So the moonshot's terminal claim still does **not** hold.
-`compare` exits `1`.
+fixture working as intended. The engineered arm names a measured field and beats it
+by far more than the `0.10` margin, so **the moonshot's terminal claim holds on this
+fixture** and `compare` exits `0`. Read the next section before repeating that.
+
+## The win is not a single-table win, and `compare` says so itself
+
+`compare` prints a **field provenance** block, read from the run's own ledger. On
+the shipped pair it says:
+
+```text
+decided by holdout: handoffs (separation 0.9157, margin 0.6041 over precursor_h)
+did NOT decide over orders-fortune500-synthetic: could not separate the best
+    candidate 'handoffs' (separation 0.8719) from precursor_h, message_volume,
+    queue_wait_h
+```
+
+The second line is the whole qualification. The field was named by the scan over the
+**second** source; on the fitting sample the same scan **cannot decide** -- `handoffs`
+(`0.8719`) is tied with `precursor_h` (`0.8719`) and `message_volume` (`0.8393`) is
+inside the `0.10` floor. The fitting period is deliberately built so that a correlate
+cannot be told from the mechanism on it.
+
+So the engineered arm used a second period the naive arm was not given. That is the
+asymmetry, and it is the finding rather than a footnote: the engineered arm's
+advantage is that it ran the discriminating experiment on an independent source
+*before* naming a mechanism, which is what the scenario's own `obligation` demanded
+("must prove the precursor generalises across shifts and regions"). It is a claim
+about question engineering, not about one table answering one question better, and
+it does not hold as a same-data comparison.
+
+The cut was measured on the source that decided. The fitting sample's own best cut
+for the same column is also `6.0`, so nothing about the *threshold* differs between
+the two periods -- but it is not validated on both, and this file will not say it is.
+
+## Two residual limits of the scan and the artifact, both visible in the output
+
+- **The scan measures one direction.** `_youden` scans `value >= threshold` only, so
+  a column that is *protective* (low values flag) is measured at its least favourable
+  direction and its separation in the ranking is a floor rather than its best.
+  `baseline.best_threshold_rule` scans both directions, so the two arms do not measure
+  direction the same way.
+- **The artifact's title can disagree with its rule.** Here the artifact is titled for
+  the winning hypothesis -- a `MEASUREMENT`/`TELEMETRY` one whose text is "the data is
+  insufficient to support ..." -- while its rule sits on `handoffs`, a field that
+  hypothesis does not mention. The rule's `basis` records where the field came from, so
+  the disagreement is readable inside the artifact (the generated module carries
+  `Rule:`, `Basis:` and `Detector:` lines), but nothing forces the title, the acceptance
+  criteria and the detector to be about the same explanation. That is the open question
+  recorded in `qse-d1-0003`.
+
+## Corrections kept in place
 
 The first version of `compare` reported the engineered rule as *circular* (its field
-was `failed`, the outcome); the next chose an arbitrary input. Both are fixed: the
-outcome is excluded from a rule's field and from the artifact's inputs, and with
-nothing measured the engine emits a detector-less artifact rather than an arbitrary
-one. The controls are recorded in [D1-failure-to-leverage.md](D1-failure-to-leverage.md).
+was `failed`, the outcome); the next chose an arbitrary input; then the engine emitted
+a deliberate **detector-less** artifact and `compare` could not score it at all. All
+three are fixed: the outcome is excluded from a rule's field and from the artifact's
+inputs, nothing arbitrary is named, and the scan's measured cut now reaches the
+builder, so a scan that decides names a field (`qse-d1-0003` in
+[D1-failure-to-leverage.md](D1-failure-to-leverage.md)).
 
-An earlier version of this file recorded the opposite result -- that the shipped
-pair was `SEPARABLE: False`, because the decoys held out of sample as strongly as
-the driver and `precursor_h` was a *deterministic* function of `handoffs`
-(r = 1.000) and so tied it forever. That was corrected by generating a holdout that
-removes the period-specific confounds, not by changing the audit.
+An earlier version of this file recorded the shipped pair as `SEPARABLE: False`,
+because the decoys held out of sample as strongly as the driver and `precursor_h` was
+a *deterministic* function of `handoffs` (r = 1.000) and so tied it forever. That was
+corrected by generating a holdout that removes the period-specific confounds, not by
+changing the audit.
 
-**And on the current code the engine still does not land on a mechanism.** The
-comparison above makes this concrete: the engine's verified artifact is a
-detector-less one (`validated: False`) that flags nothing, so it cannot win the
-control-arm comparison. Its discriminating experiment returns `INCONCLUSIVE (supported=None, refuted=False)`
-on both datasets; the explanation it selects is a measurement objection
-(`MEASUREMENT`/`TELEMETRY` -- "the data is insufficient to support ..."); and the
-artifact it produces is a conservative default, whose own stated basis is that no
-usable measured evidence reached the bar. `handoffs` appears in the ledger only as
-a *candidate column* in experiment designs and in the artifact's required-columns
-list -- never as the selected mechanism. So the fixture now distinguishes mechanism
-from correlate, and the engineered arm still does not produce the mechanism.
-
-An earlier version of this file claimed "the engine does find the `handoffs`
-mechanism". That was true of an earlier controller and is **false of the code
-shipped now**; it was corrected rather than left standing, because a claim like
-that is exactly the kind a reader would trust without re-running.
+Earlier versions of this file also asserted, in both directions, whether "the engine
+finds the `handoffs` mechanism". It did not, and then it did; both statements were
+true of the code they described and are kept here rather than deleted, because the
+sequence is the evidence that the controls work. What is true of the shipped code
+now is the scored comparison above, with its provenance.
 
 ## The scenario is synthetic, and the engine is told nothing
 

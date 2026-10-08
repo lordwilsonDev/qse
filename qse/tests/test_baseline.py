@@ -17,6 +17,28 @@ from ..experiment import runner
 from .support import EXAMPLES, pin_clock
 
 
+def tied_fixture() -> tuple[list[dict], list[dict]]:
+    """A separable fixture on which the scan can decide on neither source.
+
+    ``m`` is the mechanism and holds on both samples; ``aaa`` is the spurious
+    correlate the naive arm reaches for (it collapses out of sample); ``zzz`` ties
+    the mechanism on the holdout while carrying nothing on the fit. So on each
+    source the best candidate is tied with another and the scan measures without
+    being entitled to name a field -- which is what the D1 control needs.
+    """
+    fit: list[dict] = []
+    hold: list[dict] = []
+    for i in range(40):
+        m = i % 10
+        failed = 1 if m >= 5 else 0
+        fit.append({"m": m, "aaa": failed, "zzz": 0, "failed": failed})
+    for i in range(40):
+        m = i % 10
+        failed = 1 if m >= 5 else 0
+        hold.append({"m": m, "aaa": (i // 10) % 2, "zzz": failed, "failed": failed})
+    return fit, hold
+
+
 def spurious_fixture() -> tuple[list[dict], list[dict]]:
     """A fixture where one column predicts perfectly in-sample and not out.
 
@@ -236,13 +258,44 @@ class TheArmComparison(unittest.TestCase):
         err.close()
         return code
 
-    def test_the_shipped_fixture_is_scored_and_the_engineered_arm_does_not_yet_win(self):
-        # the naive arm's correlate collapses out of sample and the engineered rule is
-        # circular, so the honest verdict is "not yet" -- exit 1, not a false win
-        self.assertEqual(self._cli([
-            "compare", "--scenario", (EXAMPLES / "orders_scenario.json").as_posix(),
-            "--holdout", (EXAMPLES / "orders_holdout.json").as_posix(),
-            "--driver", "handoffs"]), 1)
+    def test_the_shipped_fixture_is_scored_and_the_engineered_arm_wins_on_the_second_source(self):
+        # The engineered arm now names a field and beats the naive arm on the holdout.
+        # The win must not be reported as if the fitting sample had decided it, so the
+        # provenance is asserted alongside the verdict, not instead of it.
+        import json
+
+        out = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+            code = cli.main(["--json", "compare",
+                             "--scenario", (EXAMPLES / "orders_scenario.json").as_posix(),
+                             "--holdout", (EXAMPLES / "orders_holdout.json").as_posix(),
+                             "--driver", "handoffs"])
+        payload = json.loads(out.getvalue())
+        out.close()
+        self.assertEqual(code, 0, "the engineered arm beats the naive one by more than the margin")
+
+        naive = next(a for a in payload["arms"] if a["arm"] == "naive")
+        engineered = next(a for a in payload["arms"] if a["arm"] == "engineered")
+        self.assertTrue(engineered["validated"], "a measured field is a validated rule")
+        self.assertEqual(engineered["fit"]["field"], "handoffs")
+        self.assertEqual(float(engineered["fit"]["threshold"]), 6.0)
+        self.assertGreater(engineered["holdout"]["youden"],
+                           naive["holdout"]["youden"] + payload["margin"])
+        self.assertTrue(payload["engineered_wins"])
+
+        provenance = payload["field_provenance"]
+        self.assertFalse(provenance["named_by_fitting_source"],
+                         "the fitting sample did NOT decide this field, and saying so is the point")
+        self.assertEqual([e["source"] for e in provenance["decided"]], ["holdout"])
+        self.assertTrue(provenance["undecided"],
+                        "the fitting sample must be reported as not having decided")
+        stuck = provenance["undecided"][0]
+        self.assertEqual(stuck["best"], "handoffs")
+        for other in ("precursor_h", "message_volume", "queue_wait_h"):
+            self.assertIn(other, stuck["contenders"],
+                          "the contenders the scan could not separate are named, not implied")
+        self.assertIn("NOT over", payload["verdict"])
+        self.assertIn("not a single-table win", payload["verdict"])
 
     def test_a_fixture_that_cannot_carry_the_comparison_is_refused(self):
         # fitting and scoring on the same sample never lets a decoy collapse
@@ -251,24 +304,48 @@ class TheArmComparison(unittest.TestCase):
                                     "--holdout", scenario, "--driver", "handoffs"]), 1)
 
     def test_the_engineered_arm_with_no_detector_is_reported_and_not_credited(self):
+        # The D1 control, on a fixture where it actually applies: separable (so the
+        # comparison runs) but the scan cannot decide on *either* source, because the
+        # best candidate is tied with another on each. The honest answer is "no field",
+        # and an arm that names no field is never scored and never credited.
         import json
+        import tempfile
+        from pathlib import Path
 
-        out, err = io.StringIO(), io.StringIO()
-        with redirect_stdout(out), redirect_stderr(err):
-            cli.main(["--json", "compare",
-                      "--scenario", (EXAMPLES / "orders_scenario.json").as_posix(),
-                      "--holdout", (EXAMPLES / "orders_holdout.json").as_posix(),
-                      "--driver", "handoffs"])
-        payload = json.loads(out.getvalue())
-        out.close()
-        err.close()
+        from .support import scenario_payload
+
+        fit, hold = tied_fixture()
+        shipped = scenario_payload()
+        with tempfile.TemporaryDirectory(prefix="qse-compare-") as tmp:
+            scenario = Path(tmp) / "tied_scenario.json"
+            holdout = Path(tmp) / "tied_holdout.json"
+            scenario.write_text(json.dumps({"name": "tied-fit", "question": shipped["question"],
+                                            "facts": shipped["facts"], "rows": fit}),
+                                encoding="utf-8")
+            holdout.write_text(json.dumps({"name": "tied-hold", "rows": hold}), encoding="utf-8")
+            out = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(io.StringIO()):
+                code = cli.main(["--json", "compare", "--scenario", scenario.as_posix(),
+                                 "--holdout", holdout.as_posix(), "--driver", "m",
+                                 "--ledger", str(Path(tmp) / "ledger.jsonl")])
+            payload = json.loads(out.getvalue())
+            out.close()
+
+        self.assertEqual(code, 1)
         engineered = next(a for a in payload["arms"] if a["arm"] == "engineered")
-        self.assertFalse(engineered["validated"])
+        self.assertFalse(engineered["validated"], "naming no field is not a validated rule")
         self.assertFalse(engineered["holdout"]["scored"],
                          "with no detector there is nothing to score")
         self.assertFalse(payload["engineered_wins"],
                          "an uncreditable rule must not win the comparison")
         self.assertIn("no valid detector", payload["verdict"])
+        self.assertIn("could not separate its best candidate", engineered["basis"],
+                      "the basis names what it measured and why it named nothing")
+
+        provenance = payload["field_provenance"]
+        self.assertFalse(provenance["decided"], "no source decided on this fixture")
+        self.assertEqual(sorted(e["source"] for e in provenance["undecided"]),
+                         ["holdout", "tied-fit"])
 
 
 class TheVerdicts(unittest.TestCase):

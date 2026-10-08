@@ -84,7 +84,12 @@ def measured_columns(evidence: tuple[Evidence, ...] | list[Evidence] | tuple = (
         observed = getattr(item, "observed", None)
         if not isinstance(observed, dict):
             continue
-        for key in ("field", "precursor", "value", "x", "y", "group", "time", "column"):
+        # ``favours`` is the column a discrimination scan decided on. It is the
+        # column the artifact will actually read, so it belongs in ``inputs`` -- and
+        # omitting it here left the artifact declaring every column of the table as
+        # its input while reading only one of them.
+        for key in ("field", "precursor", "value", "x", "y", "group", "time", "column",
+                    "favours"):
             value = observed.get(key)
             if isinstance(value, str) and value and value not in found:
                 found.append(value)

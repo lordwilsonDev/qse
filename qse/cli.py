@@ -83,6 +83,43 @@ def _load_ledger(path: str) -> list[dict[str, Any]]:
     return chain.load(path)
 
 
+def _detector_provenance(ledger: str, *, fitting_source: str) -> dict[str, Any]:
+    """Which source named the engineered rule's field, and which could not.
+
+    A validated rule is not a sufficient finding on its own. If the field was named
+    by the scan over a source *other* than the fitting one, the comparison is not a
+    single-table one, and a verdict that omitted that would read as stronger than
+    the run was. Read from the run's own ledger rather than re-derived, so the
+    disclosure is about what actually happened.
+    """
+    decided: list[dict[str, Any]] = []
+    undecided: list[dict[str, Any]] = []
+    if Path(ledger).exists():
+        for record in chain.load(ledger):
+            if record.get("ev") != "evidence":
+                continue
+            observed = record.get("observed")
+            if not isinstance(observed, Mapping) or "detector" not in observed:
+                continue
+            ranking = observed.get("ranking") or [{}]
+            entry = {
+                "source": str(record.get("source") or ""),
+                "field": (observed.get("detector") or {}).get("field"),
+                "best": ranking[0].get("column") if ranking else None,
+                "separation": observed.get("best_separation"),
+                "margin": observed.get("margin"),
+                "runner_up": observed.get("runner_up"),
+                "contenders": [c.get("column") for c in (observed.get("contenders") or ())],
+            }
+            (decided if observed.get("decided") else undecided).append(entry)
+    return {
+        "decided": decided,
+        "undecided": undecided,
+        "named_by_fitting_source": any(e["source"] == fitting_source for e in decided),
+        "fitting_source": fitting_source,
+    }
+
+
 def _scenario(path: str) -> Dataset:
     payload = _load_json(path, "scenario")
     rows = payload.get("rows")
@@ -538,10 +575,13 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
     def row(name: str, rule: Mapping[str, Any]) -> dict[str, Any]:
         return {"arm": name, "validated": bool(rule.get("validated")),
+                "basis": str(rule.get("basis", "")),
                 "fit": baseline_mod.score_rule(rule, fit, outcome=args.outcome),
                 "holdout": baseline_mod.score_rule(rule, hold, outcome=args.outcome)}
 
     arms = [row("naive", naive_rule), row("engineered", eng_rule)]
+    provenance = _detector_provenance(
+        ledger, fitting_source=str(payload.get("name") or "fit"))
     margin = runner_mod.DISCRIMINATION_MARGIN_FLOOR
     n_score, e_score = arms[0]["holdout"], arms[1]["holdout"]
     eng_validated = arms[1]["validated"]
@@ -561,8 +601,27 @@ def cmd_compare(args: argparse.Namespace) -> int:
                    "measurement -- so it is not credited even though it can be scored. The "
                    "engine has not earned the terminal claim here.")
     elif engineered_wins:
-        verdict = (f"the engineered arm separates the holdout better by more than the "
-                   f"{margin} margin, so the moonshot's terminal claim holds on this fixture")
+        if provenance["named_by_fitting_source"]:
+            origin = (
+                "The field was named by a scan that decided on the fitting sample itself, so the "
+                "field is in-sample and only the rule's behaviour on the holdout is out of sample."
+            )
+        else:
+            deciding = ", ".join(sorted({e["source"] for e in provenance["decided"]})) or "no source"
+            stuck = next((e for e in provenance["undecided"] if e["contenders"]), None)
+            measured = "n/a" if stuck is None else stuck["separation"]
+            where = ("it could not name one" if stuck is None
+                     else "it could not separate it from " + ", ".join(stuck["contenders"]))
+            origin = (
+                f"The field was named by the discrimination scan over {deciding} and NOT over "
+                f"{provenance['fitting_source']}, where the scan measured {measured} for it and "
+                f"{where}. So this is not a single-table win: the engineered arm's advantage is "
+                "that it ran the discriminating experiment on a second source before naming a "
+                "mechanism, which is what the question's own obligation demanded. Read it as "
+                "question engineering, not as the same table answering the same question better."
+            )
+        verdict = (f"the engineered arm separates the holdout better by more than the {margin} "
+                   f"margin. {origin}")
     else:
         verdict = (f"neither arm detects the bottleneck: the naive arm's {pick!r} collapses out "
                    f"of sample and the engineered arm does not beat it by the {margin} margin")
@@ -589,10 +648,21 @@ def cmd_compare(args: argparse.Namespace) -> int:
                 lines.append(f"        note: {note}")
                 break
     lines.append("")
+    if provenance["decided"] or provenance["undecided"]:
+        lines.append("  field provenance (read from the run's ledger):")
+        for entry in provenance["decided"]:
+            lines.append(f"    decided by {entry['source']}: {entry['field']} "
+                         f"(separation {entry['separation']}, margin {entry['margin']} over "
+                         f"{entry['runner_up']})")
+        for entry in provenance["undecided"]:
+            named = ", ".join(entry["contenders"]) or "nothing measurable"
+            lines.append(f"    did NOT decide over {entry['source']}: could not separate the best "
+                         f"candidate {entry['best']!r} (separation {entry['separation']}) from {named}")
     lines.append(f"  engineered arm wins: {engineered_wins}")
     lines.append(f"      {verdict}")
     _print({"separable": True, "naive_pick": pick, "arms": arms,
-            "engineered_wins": engineered_wins, "margin": margin, "verdict": verdict}, args.json,
+            "engineered_wins": engineered_wins, "margin": margin,
+            "field_provenance": provenance, "verdict": verdict}, args.json,
            "\n".join(lines))
     return OK if engineered_wins else DEFECT
 

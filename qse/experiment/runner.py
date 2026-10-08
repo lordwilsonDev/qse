@@ -378,6 +378,23 @@ def discrimination_scan(experiment: Experiment, dataset: Dataset) -> dict:
     One run, many candidates. Reports the full ranking and the margin over the
     runner-up, because a winner decided by less than
     ``DISCRIMINATION_MARGIN_FLOOR`` is not a decision.
+
+    Every candidate also carries **the cut that produced its separation**
+    (``op``/``threshold``/``sensitivity``/``specificity``). That cut used to be
+    computed and then discarded, which meant the engine could rank explanations but
+    could never turn a ranking into a rule -- the one measurement it makes about
+    *which* column explains the outcome was untranslatable, so the builder fell
+    through to a detector-less artifact even when the scan had decided.
+
+    When the scan **does** decide it reports the rule it decided on under
+    ``detector``, so a consumer reads a decision rather than reconstructing one from
+    the ranking. When it does not, it reports ``contenders``: the candidates within
+    the margin floor of the best. A refusal that names no alternatives is
+    indistinguishable from finding no candidates at all.
+
+    ``_youden`` measures one direction (``value >= threshold``), so the reported
+    operator is the direction the separation was actually measured in rather than an
+    inferred one.
     """
     bound = bindings(experiment)
     outcome = _need(dataset, bound, "outcome")
@@ -400,10 +417,15 @@ def discrimination_scan(experiment: Experiment, dataset: Dataset) -> dict:
     ranking: list[dict] = []
     for column in present:
         pairs = _outcome_pairs(dataset.rows, dataset.resolve(column), outcome)
-        separation, _, _, _, count = _youden(pairs)
+        separation, threshold, sensitivity, specificity, count = _youden(pairs)
         entry = {"column": column, "separation": round(separation, 4), "n": count}
         if count < 4:
             entry["note"] = "too few complete rows to separate"
+        else:
+            entry["op"] = ">="
+            entry["threshold"] = None if threshold is None else round(threshold, 4)
+            entry["sensitivity"] = round(sensitivity, 4)
+            entry["specificity"] = round(specificity, 4)
         ranking.append(entry)
     ranking.sort(key=lambda item: (-abs(item["separation"]), item["column"]))
 
@@ -411,10 +433,27 @@ def discrimination_scan(experiment: Experiment, dataset: Dataset) -> dict:
     runner_up = ranking[1] if len(ranking) > 1 else None
     margin = abs(best["separation"]) - (abs(runner_up["separation"]) if runner_up else 0.0)
     decides = abs(best["separation"]) > CORRELATION_FLOOR and margin >= DISCRIMINATION_MARGIN_FLOOR
+    # The measurement as a rule, whether or not the scan was entitled to name it. A
+    # candidate with no threshold separated nothing, so there is no rule to report.
+    detector = (
+        {"field": best["column"], "op": best["op"], "threshold": best["threshold"]}
+        if decides and best.get("threshold") is not None
+        else None
+    )
+    contenders = [] if decides else [
+        {"column": row["column"], "separation": row["separation"],
+         "op": row.get("op"), "threshold": row.get("threshold")}
+        for row in ranking[1:]
+        if row.get("threshold") is not None
+        and abs(best["separation"]) - abs(row["separation"]) < DISCRIMINATION_MARGIN_FLOOR
+    ]
     return _result(
         ranking=ranking,
         excluded_circular=excluded,
         favours=best["column"] if decides else None,
+        decided=decides,
+        detector=detector,
+        contenders=contenders,
         best_separation=abs(best["separation"]),
         margin=round(margin, 4),
         runner_up=runner_up["column"] if runner_up else None,
