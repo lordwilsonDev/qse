@@ -164,6 +164,40 @@ class TheSubjectTheRecordIsAbout(unittest.TestCase):
         self.assertEqual(continuity.classify_subject(a, same)["kind"], "SUBJECT_OK")
         self.assertEqual(continuity.classify_subject(a, restarted)["kind"], "SUBJECT_RESTARTED")
 
+    def test_a_new_process_with_the_same_token_is_a_vouch_conflict(self):
+        # a supervisor restarting a crashed job while preserving its run id
+        a = {"subject": {"name": "job", "pid": 10, "started": "t0", "token": "run-A"}}
+        b = {"subject": {"name": "job", "pid": 99, "started": "t9", "token": "run-A"}}
+        got = continuity.classify_subject(a, b)
+        self.assertEqual(got["kind"], continuity.SUBJECT_VOUCH_CONFLICT)
+        self.assertTrue(got["identity_changed"])
+        self.assertFalse(got["token_changed"])
+
+    def test_the_same_process_with_a_new_token_is_a_token_drift(self):
+        a = {"subject": {"name": "job", "pid": 10, "started": "t0", "token": "run-A"}}
+        b = {"subject": {"name": "job", "pid": 10, "started": "t0", "token": "run-B"}}
+        got = continuity.classify_subject(a, b)
+        self.assertEqual(got["kind"], continuity.SUBJECT_TOKEN_DRIFT)
+        self.assertFalse(got["identity_changed"])
+        self.assertTrue(got["token_changed"])
+
+    def test_a_new_process_and_a_new_token_agree_it_restarted(self):
+        a = {"subject": {"name": "job", "pid": 10, "started": "t0", "token": "run-A"}}
+        b = {"subject": {"name": "job", "pid": 99, "started": "t9", "token": "run-B"}}
+        self.assertEqual(continuity.classify_subject(a, b)["kind"], "SUBJECT_RESTARTED")
+
+    def test_verify_counts_the_two_witnesses_and_their_disagreement_separately(self):
+        run_a = {"name": "job", "pid": 10, "started": "t0", "token": "run-A"}
+        replaced = {"name": "job", "pid": 99, "started": "t9", "token": "run-A"}
+        _beat(self.path, 0, subject=run_a)
+        _beat(self.path, 1, subject=run_a)
+        _beat(self.path, 2, subject=replaced)  # a new process vouching the same run
+        report = continuity.verify(self.path, sleeps=[])
+        self.assertEqual(report["verdict"], "SUBJECT_BROKE")
+        self.assertEqual(report["subject_witnesses"]["disagreements"], 1)
+        self.assertEqual(report["subject_witnesses"]["identity_changes"], 1)
+        self.assertEqual(report["subject_witnesses"]["token_changes"], 0)
+
     def test_the_subject_probe_reads_a_live_process_and_none_once_it_ends(self):
         proc = subprocess.Popen(["sleep", "5"])
         self.addCleanup(lambda: proc.poll() is None and proc.kill())

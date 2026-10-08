@@ -82,6 +82,17 @@ So the inverse capability is:
   vanishes (`SUBJECT_MISSING`), and the verdict becomes `SUBJECT_BROKE`. That is the
   discrepancy the whole moonshot turns on, and it is caught by subject identity and not
   by any gap in the recorder's clock.
+- **Two witnesses, and their disagreement is the finding.** The subject is witnessed
+  twice: the machine *observes* a process identity (`name`/`pid`/`started`), and the
+  subject may *declare* a `token` (a run id it emits at start). Neither is authoritative
+  -- a token can survive a process it should not, and a pid can be reused by a process it
+  should not be -- so the record keeps both and names where they disagree:
+  `SUBJECT_VOUCH_CONFLICT` (a new process, the same token: a supervisor restarted a
+  crashed job with its run id preserved, a false vouch) and `SUBJECT_TOKEN_DRIFT` (the
+  same process, a new token: a job re-initialising in place). This is MoIE's rule applied
+  to a machine -- agreement is reported, never counted into a decision -- so no single
+  witness is allowed to overrule the other, and the two are counted separately
+  (`subject_witnesses`).
 - **Absence is evidence.** A watched metric that never moved is computed and reported
   with the same standing a change would get, because "the disk did not fill" is exactly
   what a log of changes can never show.
@@ -102,9 +113,11 @@ $ python3 moonshot_machine.py
    injected history, a machine that slept    -> SLEPT
    injected history, a machine that rebooted -> REBOOT
    injected history, a recorder that died    -> HEARTBEAT_LOST
-   subject (a real process we started, then ended)
-     recorder verdict SUBJECT_BROKE -- the ledger never missed a beat
-     identities seen: SUBJECT_OK, SUBJECT_MISSING
+   subject, witnessed twice (the machine's probe vs the subject's token)
+     a real process we started, then ended -> SUBJECT_BROKE (SUBJECT_OK, SUBJECT_MISSING)
+     injected: a new process, the same token -> SUBJECT_VOUCH_CONFLICT
+     injected: same process, a new token     -> SUBJECT_TOKEN_DRIFT
+     injected: a new process, a new token    -> SUBJECT_RESTARTED
    OS power witness: 0 sleep interval(s) in the log
 ```
 
@@ -112,13 +125,17 @@ Exit `0` when every demonstration holds, `1` when one does not, `2` for unusable
 
 ## Honest limits
 
-- **It attests a declared subject's continuity, watched through a probe.** The subject's
-  identity is whatever the caller supplies -- by default a process identity from `ps`,
-  `(name, pid, started)`. What it still does not attest: that the subject *did* anything,
-  or that a subject the probe cannot see exists at all. An unreadable subject reads as
-  `SUBJECT_MISSING` -- an honest "I could not see it" -- never as "it is fine". And the
-  identity is only as good as its fields: `pid` alone can be reused, which is why the
-  start time is carried with it.
+- **It attests a declared subject's continuity, watched twice -- and reports the two
+  witnesses separately rather than merging them.** The probed identity is whatever the
+  caller supplies (by default a process `(name, pid, started)` from `ps`); the declared
+  token is whatever the subject emits, or nothing. What it still does not attest: that
+  the subject *did* anything, or that a subject neither witness can see exists at all --
+  an unreadable subject reads as `SUBJECT_MISSING`, an honest "I could not see it", never
+  "it is fine". The token is optional and caller-supplied, so a subject that never 
+  declares one is watched by its process identity alone; identity durability is therefore
+  *reported when detectable* (the disagreements above) but not *solved* -- making a job
+  emit a durable run id, and deciding what to do when two witnesses disagree, is the open
+  question below, not a control shipped here.
 - **The sleep witness is the OS power log.** On a node whose log is rotated, suppressed,
   or on a non-Mac, a sleep becomes `HEARTBEAT_LOST` -- an honest "unknown", never a
   false "continuous". That direction is deliberate: the failure mode of the witness is
@@ -137,3 +154,16 @@ Exit `0` when every demonstration holds, `1` when one does not, `2` for unusable
   sleep-prevented (`pmset -g` reports `sleep 0 (sleep prevented by powerd)`), so it
   produced no real sleep to classify. The classification of a real sleep is exercised by
   construction, not by having witnessed one; that is stated rather than hidden.
+
+## Next question (the one the build produced)
+
+With two witnesses, the record reports their disagreement but does not decide it. When a
+supervisor restarts a crashed job and preserves its run id (`SUBJECT_VOUCH_CONFLICT`), the
+machine's observation and the subject's declaration point opposite ways, and QSE will not
+pick one -- that is the same refusal as MoIE's "agreement is reported, never counted". The
+next question is what an *operator* should be able to do with the disagreement: should the
+record carry a policy ("a vouched token outranks a probed pid", or the reverse, or
+"require both") that the *consumer* declares *before* the run, so the verdict is settled by
+a stated rule rather than by whichever witness the reader happens to believe? That is the
+boundary between reporting a conflict and resolving it, and settling it silently is the
+failure mode this whole moonshot exists to avoid.

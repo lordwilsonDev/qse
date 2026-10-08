@@ -102,10 +102,14 @@ subject (a real process we started, then ended)
 It beats **for a subject**, recording the subject's identity at every beat, so "the ledger
 never stopped" and "the job never stopped" are told apart -- the recorder can stay
 continuous while the watched thing dies and returns (`SUBJECT_RESTARTED` / `SUBJECT_MISSING`
-→ verdict `SUBJECT_BROKE`). It also keeps **absence as evidence**: a watched metric that
-never moved is reported with the same standing a change would get, because "the disk did
-not fill" is exactly what a log of changes can never show. The full inversions and the
-honest limits are in [docs/moonshot-m.md](docs/moonshot-m.md).
+→ verdict `SUBJECT_BROKE`). The subject is witnessed **twice**: the machine observes a
+process identity, and the subject may declare a token (a run id). Neither is trusted over
+the other, so their disagreement is the finding -- `SUBJECT_VOUCH_CONFLICT` (a new process
+vouching the same run id) versus `SUBJECT_TOKEN_DRIFT` (same process, a new run id). It
+also keeps **absence as evidence**: a watched metric that never moved is reported with the
+same standing a change would get, because "the disk did not fill" is exactly what a log of
+changes can never show. The full inversions and the honest limits are in
+[docs/moonshot-m.md](docs/moonshot-m.md).
 
 ## MOONSHOT-C — the same test on a cloud bill, in one script
 
@@ -266,7 +270,7 @@ cd ~/projects/qse
 python3 -B -W error::ResourceWarning -m unittest discover -s qse/tests -t .
 ```
 
-376 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
+380 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
 resolves) and so does `-B` (bytecode caches left in the tree are noise).
 
 ## The seven slots

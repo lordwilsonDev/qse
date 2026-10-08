@@ -6,6 +6,7 @@ MOONSHOT-M. See ``docs/moonshot-m.md`` for the inversions this was built from, a
 
 from . import continuity, power
 from .continuity import (BEAT, DEFAULT_INTERVAL, SLACK, SUBJECT_FIELDS, SUBJECT_KINDS,
+                        SUBJECT_TOKEN_DRIFT, SUBJECT_VOUCH_CONFLICT,
                         absences, beat, boot_time, classify, classify_subject,
                         subject_identity, subject_token, verify)
 from .power import Sleep, covering, load as load_power_log, parse as parse_power_log, read as read_power_log
@@ -13,6 +14,7 @@ from .power import Sleep, covering, load as load_power_log, parse as parse_power
 __all__ = [
     "continuity", "power",
     "BEAT", "DEFAULT_INTERVAL", "SLACK", "SUBJECT_FIELDS", "SUBJECT_KINDS",
+    "SUBJECT_TOKEN_DRIFT", "SUBJECT_VOUCH_CONFLICT",
     "absences", "beat", "boot_time", "classify", "classify_subject",
     "subject_identity", "subject_token", "verify",
     "Sleep", "covering", "load_power_log", "parse_power_log", "read_power_log",

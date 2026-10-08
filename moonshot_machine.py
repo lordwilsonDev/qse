@@ -210,12 +210,24 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
             proc.kill()
     subject_report = continuity.verify(subject_ledger, sleeps=[], slack=0.1)
 
-    # An injected restart: the recorder stays on cadence while the subject's identity
-    # changes. Deterministic, so this half does not depend on timing.
-    subject_restart = continuity.classify_subject(
-        {"subject": {"name": "job", "pid": 10, "started": "t0"}},
-        {"subject": {"name": "job", "pid": 99, "started": "t9"}},
-    )["kind"]
+    # The two witnesses, and the four ways they can move. Deterministic, so this half does
+    # not depend on timing. "a new process, the same token" is the case a supervisor
+    # produces: a crashed job restarted with its run id preserved -- a false vouch.
+    base_subject = {"name": "job", "pid": 10, "started": "t0", "token": "run-A"}
+    subject_cases = {
+        "nothing changed": ({**base_subject}, "SUBJECT_OK"),
+        "a new process, the same token": ({**base_subject, "pid": 99, "started": "t9"},
+                                          "SUBJECT_VOUCH_CONFLICT"),
+        "same process, a new token": ({**base_subject, "token": "run-B"},
+                                       "SUBJECT_TOKEN_DRIFT"),
+        "a new process, a new token": ({**base_subject, "pid": 99, "started": "t9",
+                                        "token": "run-B"}, "SUBJECT_RESTARTED"),
+    }
+    subject_injected = {
+        name: continuity.classify_subject({"subject": base_subject}, {"subject": now})["kind"]
+        for name, (now, _kind) in subject_cases.items()
+    }
+    subject_expected = {name: kind for name, (_now, kind) in subject_cases.items()}
 
     return {
         "real": {"ledger": real, "verdict": report["verdict"], "beats": report["beats"],
@@ -225,8 +237,9 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
         "injected": injected,
         "subject": {"ledger": subject_ledger, "verdict": subject_report["verdict"],
                     "counts": subject_report["subject_counts"],
+                    "witnesses": subject_report["subject_witnesses"],
                     "kinds": [row["kind"] for row in subject_report["subject_transitions"]],
-                    "injected_restart": subject_restart},
+                    "injected": subject_injected, "expected": subject_expected},
         "absences": continuity.absences(real),
         "power_sleeps_recorded": len(power.load()),
     }
@@ -245,7 +258,7 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
                                    "a machine that rebooted": "REBOOT",
                                    "a recorder that died": "HEARTBEAT_LOST"}
           and demo["subject"]["verdict"] == "SUBJECT_BROKE"
-          and demo["subject"]["injected_restart"] == "SUBJECT_RESTARTED"
+          and demo["subject"]["injected"] == demo["subject"]["expected"]
           and "SUBJECT_OK" in demo["subject"]["kinds"])
 
     lines: list[str] = []
@@ -299,11 +312,15 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
                  f"(chain_ok {demo['tamper']['chain_ok']})")
     for name, kind in demo["injected"].items():
         lines.append(f"   injected history, {name:<26} -> {kind}")
-    lines.append(f"   subject (a real process we started, then ended):")
-    lines.append(f"     recorder verdict {demo['subject']['verdict']} -- the ledger never "
-                 f"missed a beat; subject counts {demo['subject']['counts']}")
-    lines.append(f"     identities seen: {', '.join(demo['subject']['kinds'])}; an injected "
-                 f"identity change -> {demo['subject']['injected_restart']}")
+    lines.append("   subject, witnessed twice (the machine's probe vs the subject's token):")
+    lines.append(f"     a real process we started, then ended -> verdict "
+                 f"{demo['subject']['verdict']} from counts {demo['subject']['counts']}")
+    for name, kind in demo["subject"]["injected"].items():
+        lines.append(f"     injected: {name:<30} -> {kind}")
+    wit = demo["subject"]["witnesses"]
+    lines.append(f"     witnesses on the real ledger: {wit['identity_changes']} identity "
+                 f"change(s), {wit['token_changes']} token change(s), "
+                 f"{wit['disagreements']} disagreement(s)")
     lines.append("   absences (what did not change):")
     for row in demo["absences"]:
         state = "held steady" if not row["changed"] else "changed"

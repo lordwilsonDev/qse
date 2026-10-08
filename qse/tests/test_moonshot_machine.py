@@ -48,7 +48,11 @@ class TheMoonshotMachine(unittest.TestCase):
         # and the record still reports the subject break -- the moonshot's whole point.
         subject = payload["demo"]["subject"]
         self.assertEqual(subject["verdict"], "SUBJECT_BROKE")
-        self.assertEqual(subject["injected_restart"], "SUBJECT_RESTARTED")
+        self.assertEqual(subject["injected"], subject["expected"])
+        self.assertEqual(subject["injected"]["a new process, the same token"],
+                         "SUBJECT_VOUCH_CONFLICT")
+        self.assertEqual(subject["injected"]["same process, a new token"],
+                         "SUBJECT_TOKEN_DRIFT")
         self.assertIn("SUBJECT_MISSING", subject["kinds"])
 
     def test_the_page_names_the_moonshot_and_its_verdict(self):

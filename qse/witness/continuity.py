@@ -48,7 +48,17 @@ KINDS = ("CONTINUOUS", "SLEPT", "REBOOT", "HEARTBEAT_LOST")
 #: recorder's own gap kinds because the two can disagree in the way that matters: a
 #: recorder can keep beating perfectly while the thing it was watching dies and returns.
 SUBJECT_KINDS = ("SUBJECT_UNWATCHED", "SUBJECT_OK", "SUBJECT_RESTARTED",
-                 "SUBJECT_MISSING", "SUBJECT_APPEARED")
+                 "SUBJECT_MISSING", "SUBJECT_APPEARED",
+                 "SUBJECT_VOUCH_CONFLICT", "SUBJECT_TOKEN_DRIFT")
+
+#: The two ways a subject's identity can be witnessed, and why both are kept. The
+#: machine *observes* a process (name, pid, started); the subject can *declare* a token
+#: (a run id it emits at start). Neither is authoritative: a token survives a process it
+#: should not, and a pid is reused by a process it should not be. So the record keeps both
+#: and reports where they disagree, rather than picking one to trust -- the same rule MoIE
+#: applies to experts (agreement is reported, never counted into a decision).
+SUBJECT_VOUCH_CONFLICT = "SUBJECT_VOUCH_CONFLICT"
+SUBJECT_TOKEN_DRIFT = "SUBJECT_TOKEN_DRIFT"
 
 #: The fields of a subject identity that must not change across a restart. A pid can be
 #: reused; a start time cannot be reproduced by a new process, so both are kept.
@@ -150,32 +160,70 @@ def subject_token(subject: Mapping[str, Any] | None) -> tuple[str, ...] | None:
     return tuple(str(subject.get(field, "")) for field in SUBJECT_FIELDS)
 
 
-def classify_subject(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dict[str, Any]:
-    """Name what happened to the *watched subject* between two beats.
+def _declared_token(subject: Mapping[str, Any] | None) -> str | None:
+    """The token the *subject itself* declared, if any. ``None`` when it declared none."""
+    if not subject:
+        return None
+    value = subject.get("token")
+    return None if value in (None, "") else str(value)
 
-    Distinct from ``classify``, which is about the recorder. The disagreement between
-    the two is the finding this exists for: the recorder can report a perfectly
-    continuous ledger while the subject it was watching died and came back, and only a
-    comparison of subject identity catches it. That is the whole point of binding a
-    subject at all -- otherwise "the ledger never stopped" is an answer to a question
-    nobody asked.
+
+def classify_subject(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dict[str, Any]:
+    """Name what happened to the *watched subject*, from two independent witnesses.
+
+    The subject is witnessed twice: the machine *observes* a process identity
+    (``name``/``pid``/``started``), and the subject may *declare* a ``token`` (a run id it
+    emits at start). Neither witness is authoritative, so the case that matters is where
+    they disagree:
+
+    * ``SUBJECT_VOUCH_CONFLICT`` -- a new process, the same declared token. The subject
+      vouches for a continuity the machine's own observation contradicts (a supervisor
+      restarting a crashed job while preserving its run id).
+    * ``SUBJECT_TOKEN_DRIFT`` -- the same process, a new declared token. The logical run
+      changed without the process stopping (a job re-initialising in place).
+
+    Both are reported as breaks; naming them apart is the point, because the remedy
+    differs and a single "restarted" would hide which witness to believe.
     """
     before = subject_token(previous.get("subject"))
     after = subject_token(current.get("subject"))
-    if before is None and after is None:
+    before_tok = _declared_token(previous.get("subject"))
+    after_tok = _declared_token(current.get("subject"))
+
+    if before is None and after is None and before_tok is None and after_tok is None:
         return {"kind": "SUBJECT_UNWATCHED", "why": "no subject is being watched"}
-    if before is None:
-        return {"kind": "SUBJECT_APPEARED", "after": list(after),
+    if before is None and before_tok is None:
+        return {"kind": "SUBJECT_APPEARED", "after": list(after or ()),
                 "why": "watching began at this beat"}
-    if after is None:
-        return {"kind": "SUBJECT_MISSING", "before": list(before),
+    if after is None and after_tok is None:
+        return {"kind": "SUBJECT_MISSING", "before": list(before or ()),
                 "why": "the watched subject was not present at this beat, so the recorder "
                        "kept beating while the subject did not"}
-    if before == after:
-        return {"kind": "SUBJECT_OK", "why": "the same subject identity at both beats"}
-    return {"kind": "SUBJECT_RESTARTED", "before": list(before), "after": list(after),
-            "why": "the subject's identity changed between beats: the recorder survived a "
-                   "restart of the thing it was watching"}
+
+    identity_changed = before != after
+    token_declared = before_tok is not None or after_tok is not None
+    token_changed = before_tok != after_tok
+    flags = {"identity_changed": identity_changed, "token_declared": token_declared,
+             "token_changed": token_changed}
+
+    if not identity_changed and not (token_declared and token_changed):
+        return {"kind": "SUBJECT_OK", "why": "the same subject identity at both beats",
+                **flags}
+    if identity_changed and token_declared and not token_changed:
+        return {"kind": SUBJECT_VOUCH_CONFLICT, "before": list(before or ()),
+                "after": list(after or ()), "token": after_tok, **flags,
+                "why": "the process was replaced but still declares the same token: the "
+                       "subject vouches for a continuity the machine's own observation "
+                       "contradicts"}
+    if identity_changed:
+        return {"kind": "SUBJECT_RESTARTED", "before": list(before or ()),
+                "after": list(after or ()), **flags,
+                "why": "the subject's identity changed between beats: the recorder survived "
+                       "a restart of the thing it was watching"}
+    return {"kind": SUBJECT_TOKEN_DRIFT, "token_before": before_tok, "token_after": after_tok,
+            **flags,
+            "why": "the process is the same but it declared a new token: the logical run "
+                   "changed without the process stopping"}
 
 
 def classify(
@@ -242,6 +290,7 @@ def verify(
         "subject_transitions": [],
         "subject_counts": {},
         "subject_breaks": [],
+        "subject_witnesses": {},
         "power_sleeps": None,
         "verdict": "EMPTY",
     }
@@ -287,8 +336,20 @@ def verify(
     result["subject_counts"] = subject_counts
     result["subject_breaks"] = [
         row for row in subject_rows
-        if row["kind"] in ("SUBJECT_RESTARTED", "SUBJECT_MISSING")
+        if row["kind"] in ("SUBJECT_RESTARTED", "SUBJECT_MISSING",
+                            SUBJECT_VOUCH_CONFLICT, SUBJECT_TOKEN_DRIFT)
     ]
+    # The two witnesses, counted separately, so a reader can see which one moved -- and
+    # how often they disagreed with each other rather than with the subject.
+    witnesses = {"identity_changes": 0, "token_changes": 0, "disagreements": 0}
+    for row in subject_rows:
+        if row.get("identity_changed"):
+            witnesses["identity_changes"] += 1
+        if row.get("token_declared") and row.get("token_changed"):
+            witnesses["token_changes"] += 1
+        if row["kind"] in (SUBJECT_VOUCH_CONFLICT, SUBJECT_TOKEN_DRIFT):
+            witnesses["disagreements"] += 1
+    result["subject_witnesses"] = witnesses
 
     if not beats:
         result["verdict"] = "EMPTY"
