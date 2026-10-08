@@ -631,6 +631,16 @@ def counterfactual_replay(experiment: Experiment, dataset: Dataset) -> dict:
     rate in the flagged rows against the unflagged ones. Supported when the rule
     lands on the bad rows more often than on the good ones; that is the weakest
     possible evidence for an intervention and it says so.
+
+    The rule it reports is a **probe**, and it is reported under ``probe_rule`` with
+    ``probe: True`` for that reason. The field and threshold are not measured here --
+    they were declared by whoever planned the test, before any data was seen. This
+    runner answers "what would that hypothetical rule have done", which is a real
+    question, and its answer is not a measurement of where the threshold belongs.
+    Reporting it under a key the builder reads as a measured rule let a data-blind
+    placeholder (``threshold=24``) become the shipped artifact's detector, which is
+    why the key is named for what it is. See ``docs/D1-failure-to-leverage.md``,
+    entry ``qse-d1-0004``.
     """
     bound = bindings(experiment)
     field_column = _need(dataset, bound, "field")
@@ -660,7 +670,8 @@ def counterfactual_replay(experiment: Experiment, dataset: Dataset) -> dict:
     rate_fired = sum(fired) / len(fired)
     rate_quiet = sum(quiet) / len(quiet)
     return _result(
-        rule=f"{field_column} {operation} {threshold}",
+        probe=True,
+        probe_rule=f"{field_column} {operation} {threshold}",
         flagged=len(fired),
         unflagged=len(quiet),
         outcome_rate_flagged=round(rate_fired, 4),

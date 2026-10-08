@@ -284,9 +284,12 @@ class TheArmComparison(unittest.TestCase):
         self.assertTrue(payload["engineered_wins"])
 
         provenance = payload["field_provenance"]
+        self.assertEqual(provenance["field"], "handoffs")
         self.assertFalse(provenance["named_by_fitting_source"],
                          "the fitting sample did NOT decide this field, and saying so is the point")
-        self.assertEqual([e["source"] for e in provenance["decided"]], ["holdout"])
+        self.assertEqual([e["source"] for e in provenance["named_by"]], ["holdout"])
+        self.assertEqual(provenance["rejected"], [],
+                         "nothing was rejected here: only one source decided")
         self.assertTrue(provenance["undecided"],
                         "the fitting sample must be reported as not having decided")
         stuck = provenance["undecided"][0]
@@ -294,7 +297,12 @@ class TheArmComparison(unittest.TestCase):
         for other in ("precursor_h", "message_volume", "queue_wait_h"):
             self.assertIn(other, stuck["contenders"],
                           "the contenders the scan could not separate are named, not implied")
+        # replication, stated as a measurement rather than an assumption
+        self.assertEqual({e["source"]: e["separation"] for e in provenance["ranked_on"]},
+                         {"orders-fortune500-synthetic": 0.8719, "holdout": 0.9157})
         self.assertIn("NOT over", payload["verdict"])
+        self.assertIn("still separates the outcome on orders-fortune500-synthetic",
+                      payload["verdict"])
         self.assertIn("not a single-table win", payload["verdict"])
 
     def test_a_fixture_that_cannot_carry_the_comparison_is_refused(self):
@@ -343,7 +351,9 @@ class TheArmComparison(unittest.TestCase):
                       "the basis names what it measured and why it named nothing")
 
         provenance = payload["field_provenance"]
-        self.assertFalse(provenance["decided"], "no source decided on this fixture")
+        self.assertIsNone(provenance["field"], "the arm named no field")
+        self.assertEqual(provenance["named_by"], [], "no source named a field on this fixture")
+        self.assertEqual(provenance["rejected"], [])
         self.assertEqual(sorted(e["source"] for e in provenance["undecided"]),
                          ["holdout", "tied-fit"])
 

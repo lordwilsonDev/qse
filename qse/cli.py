@@ -28,6 +28,7 @@ from . import (
     closeout as closeout_mod,
     metrics as metrics_mod,
 )
+from .build import generator as generator_mod
 from .control.controller import (
     DEFAULT_BUILDER,
     DEFAULT_VERIFIER,
@@ -83,16 +84,49 @@ def _load_ledger(path: str) -> list[dict[str, Any]]:
     return chain.load(path)
 
 
-def _detector_provenance(ledger: str, *, fitting_source: str) -> dict[str, Any]:
-    """Which source named the engineered rule's field, and which could not.
+def _roles_from(args: argparse.Namespace) -> dict[str, str]:
+    """Declared column roles, from repeated ``--role ROLE=COLUMN`` plus ``--exclude``.
 
-    A validated rule is not a sufficient finding on its own. If the field was named
-    by the scan over a source *other* than the fitting one, the comparison is not a
-    single-table one, and a verdict that omitted that would read as stronger than
-    the run was. Read from the run's own ledger rather than re-derived, so the
-    disclosure is about what actually happened.
+    The engine guesses roles from conventional business-workflow column names. That
+    guess is a convenience for one kind of table and a silent failure for every other
+    kind, so a domain can declare instead. ``--exclude`` names columns that are
+    derived from the outcome, which are then never candidates and never inputs.
     """
-    decided: list[dict[str, Any]] = []
+    out: dict[str, str] = {}
+    for item in getattr(args, "role", None) or ():
+        role, separator, value = str(item).partition("=")
+        if not separator or not role.strip():
+            raise Unusable(f"--role {item!r} is not ROLE=COLUMN")
+        out[role.strip()] = value.strip()
+    excluded = str(getattr(args, "exclude", "") or "").strip()
+    if excluded:
+        out["exclude"] = excluded
+    return out
+
+
+def _excluded_from(args: argparse.Namespace) -> tuple[str, ...]:
+    raw = str(getattr(args, "exclude", "") or "")
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def detector_provenance(ledger: str, *, fitting_source: str,
+                       field: str | None) -> dict[str, Any]:
+    """What each source's scan decided, and whether the engineered field replicates.
+
+    The question is not "did some scan decide somewhere" -- it is "did a scan decide on
+    **this** field, and does that field still separate the outcome where the choice was
+    not made". Those come apart, and they came apart on the first run of the cloud
+    fixture: the fitting period's scan decided confidently on a column that collapses,
+    while the field the artifact actually named was decided on the second period and
+    held on both. A provenance block keyed on "any decision" reported that as an
+    in-sample win, which was false about the run it was summarising.
+
+    Read from the run's own ledger rather than re-derived, so the disclosure is about
+    what actually happened.
+    """
+    named_by: list[dict[str, Any]] = []
+    ranked_on: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
     undecided: list[dict[str, Any]] = []
     if Path(ledger).exists():
         for record in chain.load(ledger):
@@ -101,22 +135,37 @@ def _detector_provenance(ledger: str, *, fitting_source: str) -> dict[str, Any]:
             observed = record.get("observed")
             if not isinstance(observed, Mapping) or "detector" not in observed:
                 continue
-            ranking = observed.get("ranking") or [{}]
-            entry = {
-                "source": str(record.get("source") or ""),
-                "field": (observed.get("detector") or {}).get("field"),
-                "best": ranking[0].get("column") if ranking else None,
-                "separation": observed.get("best_separation"),
-                "margin": observed.get("margin"),
-                "runner_up": observed.get("runner_up"),
-                "contenders": [c.get("column") for c in (observed.get("contenders") or ())],
-            }
-            (decided if observed.get("decided") else undecided).append(entry)
+            source = str(record.get("source") or "")
+            chosen = (observed.get("detector") or {}).get("field")
+            here = generator_mod.separation_of(observed, field) if field else None
+            if here is not None:
+                ranked_on.append({"source": source, "separation": here})
+            if field and chosen == field:
+                named_by.append({
+                    "source": source,
+                    "separation": observed.get("best_separation"),
+                    "margin": observed.get("margin"),
+                    "runner_up": observed.get("runner_up"),
+                })
+            elif observed.get("decided"):
+                rejected.append({"source": source, "decided_on": chosen,
+                                 "separation": observed.get("best_separation")})
+            else:
+                ranking = observed.get("ranking") or [{}]
+                undecided.append({
+                    "source": source,
+                    "best": ranking[0].get("column") if ranking else None,
+                    "separation": observed.get("best_separation"),
+                    "contenders": [c.get("column") for c in (observed.get("contenders") or ())],
+                })
     return {
-        "decided": decided,
-        "undecided": undecided,
-        "named_by_fitting_source": any(e["source"] == fitting_source for e in decided),
+        "field": field,
         "fitting_source": fitting_source,
+        "named_by": named_by,
+        "ranked_on": ranked_on,
+        "rejected": rejected,
+        "undecided": undecided,
+        "named_by_fitting_source": any(e["source"] == fitting_source for e in named_by),
     }
 
 
@@ -207,7 +256,18 @@ def acceptance(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         expert_disagreement=preserved)
 
     gaps = [d for d in state.decisions if d.get("kind") == "KNOWLEDGE_GAP"]
-    add("A07", bool(gaps), f"{len(gaps)} knowledge gap(s) named", hids=[d.get("subject") for d in gaps])
+    # The check is that evidence sufficiency was *scanned*, not that the scan found
+    # something. Requiring a finding made a run where every explanation had evidence
+    # fail a requirement about identifying missing evidence -- a false alarm of the
+    # same shape as A16's (see `qse-d1-0002`), one level up. The scan records itself
+    # now, so "we looked and found no gap" is a fact the ledger can show, and a run
+    # that never evaluated sufficiency still fails.
+    coverage = [d for d in state.decisions if d.get("kind") == "EVIDENCE_COVERAGE"]
+    add("A07", bool(coverage),
+        f"evidence sufficiency scanned for {len(coverage)} question(s), naming "
+        f"{len(gaps)} unsupported explanation(s)",
+        n=len(gaps), hids=[d.get("subject") for d in gaps],
+        checked=[d.get("checked") for d in coverage])
 
     experiments = list(state.experiments.values())
     add("A08", bool(experiments), f"{len(experiments)} experiment(s) proposed", n=len(experiments))
@@ -365,6 +425,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         real_world=args.real_world,
         before=args.before,
         after=args.after,
+        roles=_roles_from(args),
     )
     payload = report.to_dict()
     lines = [f"{'BLOCKED' if report.blocked else 'COMPLETED'}: {len(report.stages)} stage(s)"]
@@ -468,10 +529,14 @@ def cmd_fixture(args: argparse.Namespace) -> int:
         hold_rows = _load_json(args.holdout, "holdout").get("rows") or []
         if not hold_rows:
             raise Unusable("holdout has no rows to correlate")
-    out = baseline_mod.audit(rows, hold_rows, outcome=args.outcome, driver=args.driver)
+    excluded = _excluded_from(args)
+    out = baseline_mod.audit(rows, hold_rows, outcome=args.outcome, driver=args.driver,
+                             exclude=excluded)
 
     lines = [f"  {len(out['ranked'])} measurable column(s), ranked on the fitting sample:",
              f"    {'column':<20} {'fit r':>8} {'holdout r':>10}"]
+    if excluded:
+        lines.append(f"    excluded as derived from the outcome: {', '.join(excluded)}")
     for row in out["ranked"]:
         hold = "n/a" if row["holdout"] is None else f"{row['holdout']:+.3f}"
         lines.append(f"    {row['column']:<20} {row['fit']:>+8.3f} {hold:>10}")
@@ -549,7 +614,9 @@ def cmd_compare(args: argparse.Namespace) -> int:
     if not fit or not hold:
         raise Unusable("both the scenario and the holdout need rows to compare on")
 
-    gate = baseline_mod.audit(fit, hold, outcome=args.outcome, driver=args.driver)
+    excluded = _excluded_from(args)
+    gate = baseline_mod.audit(fit, hold, outcome=args.outcome, driver=args.driver,
+                              exclude=excluded)
     if not gate["separable"]:
         _print(gate, args.json,
                f"  the fixture cannot carry the comparison: {gate['reason']}")
@@ -569,56 +636,55 @@ def cmd_compare(args: argparse.Namespace) -> int:
                   Dataset(name="holdout", rows=hold)],
         rows=fit,
         authority=args.authority or None,
+        roles=_roles_from(args),
     )
     built = next((s for s in report.stages if s.get("stage") == "build"), None)
     eng_rule = (built or {}).get("rule") or {}
 
-    def row(name: str, rule: Mapping[str, Any]) -> dict[str, Any]:
-        return {"arm": name, "validated": bool(rule.get("validated")),
-                "basis": str(rule.get("basis", "")),
-                "fit": baseline_mod.score_rule(rule, fit, outcome=args.outcome),
-                "holdout": baseline_mod.score_rule(rule, hold, outcome=args.outcome)}
-
-    arms = [row("naive", naive_rule), row("engineered", eng_rule)]
-    provenance = _detector_provenance(
-        ledger, fitting_source=str(payload.get("name") or "fit"))
-    margin = runner_mod.DISCRIMINATION_MARGIN_FLOOR
-    n_score, e_score = arms[0]["holdout"], arms[1]["holdout"]
-    eng_validated = arms[1]["validated"]
-    # An unvalidated rule (chosen by construction, not by measurement) is never
-    # credited even if its separation looks high: a rule that wins by luck is not
-    # evidence that engineered questioning created the capability.
-    engineered_wins = bool(
-        eng_validated and n_score.get("scored") and e_score.get("scored")
-        and e_score["youden"] > n_score["youden"] + margin
-    )
-    if not e_score.get("scored"):
-        verdict = (f"the engineered arm cannot be scored: {e_score.get('reason')}. "
+    # One place decides this, so the command line and `moonshot_cloud.py` cannot
+    # disagree about whether the engineered arm won.
+    scored = baseline_mod.score_arms(naive_rule, eng_rule, fit, hold, outcome=args.outcome)
+    arms, margin, engineered_wins = scored["arms"], scored["margin"], scored["engineered_wins"]
+    e_score = arms[1]["holdout"]
+    provenance = detector_provenance(
+        ledger, fitting_source=str(payload.get("name") or "fit"),
+        field=eng_rule.get("field") if isinstance(eng_rule.get("field"), str) else None)
+    if scored["engineered_unscored"] is not None:
+        verdict = (f"the engineered arm cannot be scored: {scored['engineered_unscored']}. "
                    "The comparison is runnable, but the engine produced no valid detector to "
                    "score against the naive arm.")
-    elif not eng_validated:
+    elif scored["engineered_unvalidated"]:
         verdict = ("the engineered rule is unvalidated -- it was chosen by construction, not by "
                    "measurement -- so it is not credited even though it can be scored. The "
                    "engine has not earned the terminal claim here.")
     elif engineered_wins:
+        field = provenance["field"]
+        deciding = ", ".join(e["source"] for e in provenance["named_by"]) or "no source"
+        elsewhere = [(e["source"], e["separation"]) for e in provenance["ranked_on"]
+                     if e["source"] not in {d["source"] for d in provenance["named_by"]}]
         if provenance["named_by_fitting_source"]:
             origin = (
-                "The field was named by a scan that decided on the fitting sample itself, so the "
-                "field is in-sample and only the rule's behaviour on the holdout is out of sample."
+                f"The field {field!r} was decided on the fitting sample itself, so the field is "
+                "in-sample and only the rule's behaviour on the holdout is out of sample."
             )
         else:
-            deciding = ", ".join(sorted({e["source"] for e in provenance["decided"]})) or "no source"
-            stuck = next((e for e in provenance["undecided"] if e["contenders"]), None)
-            measured = "n/a" if stuck is None else stuck["separation"]
-            where = ("it could not name one" if stuck is None
-                     else "it could not separate it from " + ", ".join(stuck["contenders"]))
+            hold = ("; it still separates the outcome on "
+                    + ", ".join(f"{source} (separation {round(sep, 4)})" for source, sep in elsewhere)
+                    if elsewhere else "")
             origin = (
-                f"The field was named by the discrimination scan over {deciding} and NOT over "
-                f"{provenance['fitting_source']}, where the scan measured {measured} for it and "
-                f"{where}. So this is not a single-table win: the engineered arm's advantage is "
-                "that it ran the discriminating experiment on a second source before naming a "
-                "mechanism, which is what the question's own obligation demanded. Read it as "
-                "question engineering, not as the same table answering the same question better."
+                f"The field {field!r} was named by the discrimination scan over {deciding}, NOT "
+                f"over {provenance['fitting_source']}{hold}. So this is not a single-table win: "
+                "the engineered arm's advantage is that it ran the discriminating experiment on "
+                "a second source before naming a mechanism, which is what the question's own "
+                "obligation demanded. Read it as question engineering, not as the same table "
+                "answering the same question better."
+            )
+        if provenance["rejected"]:
+            origin += (
+                " The fitting sample's own scan had decided on "
+                + ", ".join(f"{e['decided_on']!r} (separation {e['separation']})"
+                            for e in provenance["rejected"])
+                + ", which does not replicate and was rejected rather than shipped."
             )
         verdict = (f"the engineered arm separates the holdout better by more than the {margin} "
                    f"margin. {origin}")
@@ -648,16 +714,22 @@ def cmd_compare(args: argparse.Namespace) -> int:
                 lines.append(f"        note: {note}")
                 break
     lines.append("")
-    if provenance["decided"] or provenance["undecided"]:
+    if provenance["named_by"] or provenance["ranked_on"] or provenance["rejected"]:
         lines.append("  field provenance (read from the run's ledger):")
-        for entry in provenance["decided"]:
-            lines.append(f"    decided by {entry['source']}: {entry['field']} "
-                         f"(separation {entry['separation']}, margin {entry['margin']} over "
-                         f"{entry['runner_up']})")
+        lines.append(f"    the engineered field is {provenance['field']!r}")
+        for entry in provenance["named_by"]:
+            lines.append(f"    named by {entry['source']}: separation {entry['separation']}, "
+                         f"margin {entry['margin']} over {entry['runner_up']}")
+        for entry in provenance["rejected"]:
+            lines.append(f"    {entry['source']} decided on {entry['decided_on']!r} instead "
+                         f"(separation {entry['separation']}) -- rejected, it does not replicate")
         for entry in provenance["undecided"]:
             named = ", ".join(entry["contenders"]) or "nothing measurable"
-            lines.append(f"    did NOT decide over {entry['source']}: could not separate the best "
+            lines.append(f"    {entry['source']} did not decide: could not separate the best "
                          f"candidate {entry['best']!r} (separation {entry['separation']}) from {named}")
+        for entry in provenance["ranked_on"]:
+            lines.append(f"    {provenance['field']} on {entry['source']}: "
+                         f"separation {entry['separation']}")
     lines.append(f"  engineered arm wins: {engineered_wins}")
     lines.append(f"      {verdict}")
     _print({"separable": True, "naive_pick": pick, "arms": arms,
@@ -714,7 +786,7 @@ def cmd_selftest(args: argparse.Namespace) -> int:
         question=None, authority="VP of Operations", builder=DEFAULT_BUILDER,
         verifier=DEFAULT_VERIFIER, max_revisions=MAX_REVISIONS,
         builder_identity="", verifier_identity="",
-        real_world=False, before=None, after=None,
+        real_world=False, before=None, after=None, role=[], exclude="",
     ))
     check_code = cmd_checks(argparse.Namespace(json=args.json, ledger=args.ledger))
     return DEFECT if (run_code or check_code) else OK
@@ -766,6 +838,13 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--before", type=float, default=None)
     run.add_argument("--after", type=float, default=None)
     run.add_argument("--now", help="freeze the clock at an ISO timestamp, so a run is reproducible")
+    run.add_argument("--role", action="append", default=[], metavar="ROLE=COLUMN",
+                     help="declare what a column is (outcome, group, time, precursor, x, y, "
+                          "value, field, candidates, columns); repeatable. Without it the "
+                          "planner guesses conventional business-workflow names")
+    run.add_argument("--exclude", default="",
+                     help="comma list of columns derived from the outcome; never a candidate "
+                          "explanation and never an artifact input")
 
     replay = add("replay", cmd_replay, "rebuild the whole run from the ledger alone")
     replay.add_argument("--ledger", required=True)
@@ -793,6 +872,8 @@ def build_parser() -> argparse.ArgumentParser:
     fixture.add_argument("--holdout", help="a second, independent sample")
     fixture.add_argument("--outcome", default="failed", help="the column being explained")
     fixture.add_argument("--driver", help="the column the fixture was built around")
+    fixture.add_argument("--exclude", default="",
+                         help="comma list of columns derived from the outcome")
 
     compare = add("compare", cmd_compare,
                   "score the naive and engineered arms on one fixture, same metric")
@@ -805,6 +886,10 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--authority", default="VP of Operations")
     compare.add_argument("--builder", default=DEFAULT_BUILDER)
     compare.add_argument("--verifier", default=DEFAULT_VERIFIER)
+    compare.add_argument("--role", action="append", default=[], metavar="ROLE=COLUMN",
+                         help="declare what a column is; repeatable")
+    compare.add_argument("--exclude", default="",
+                         help="comma list of columns derived from the outcome")
 
     verify_claims = add("verify-claims", cmd_verify_claims,
                         "check the staged claims file against reality")

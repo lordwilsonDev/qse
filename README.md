@@ -61,10 +61,43 @@ python3 -m qse.cli rules                                # every refusal and what
 # one question, on its own
 python3 -m qse.cli ask    "Can we predict operational bottlenecks before they become expensive failures?"
 python3 -m qse.cli invert "Can we predict operational bottlenecks before they become expensive failures?"
+
+# MOONSHOT-C: the same comparison on a second question, in a second domain
+python3 moonshot_cloud.py                 # gate, build, score, check -- one command, one page
+python3 moonshot_cloud.py --write examples  # write the synthetic cloud fixture and stop
 ```
 
 Exit codes are the verdict: `0` it did what it says and every check it ran holds,
 `1` a defect, a refusal, or an unmet condition, `2` input QSE cannot use at all.
+
+## MOONSHOT-C — the same test on a cloud bill, in one script
+
+`moonshot_cloud.py` reruns the terminal comparison on an unrelated question -- a
+cloud bill finance cannot explain -- end to end in one command. It gates on
+separability, builds the engineered arm on two periods, scores both arms by the same
+statistic, and evaluates the 17-item acceptance list against the run's own ledger.
+Its exit code is the answer: `0` when the data can carry the comparison, the
+engineered arm is validated and wins, and every check holds; `1` when it does not;
+`2` for input it cannot use at all.
+
+```text
+    arm          rule                       fit J  holdout J  flagged
+    naive        vcpus >= 16.0               +0.885     -0.003      165
+    engineered   idle_hours >= 13.0          +0.603     +0.969      178
+
+  named by cloud-holdout: idle_hours (separation 0.9687, margin 0.5924 over retries_millions)
+  cloud-fit decided on 'vcpus' instead (separation 0.885) -- rejected: it does not replicate
+```
+
+Pointing the engine at a second domain surfaced the failures in
+[docs/D1-failure-to-leverage.md](docs/D1-failure-to-leverage.md) entry `qse-d1-0004`:
+the planner guessed *orders* column names, so on cloud data every experiment came back
+`ran: false` and the engine reported "no explanation found" without saying it had never
+looked. Columns are now **declared** (`--role ROLE=COLUMN`), a column derived from the
+outcome is **excluded** (`--exclude`), a field one period's scan named is not shipped
+until the other period also supports it, a planned data-blind threshold travels as a
+**probe**, and a run that *scanned* for missing evidence no longer fails the check that
+asks whether it looked.
 
 ## The control arm, and the fixture that now carries one
 
@@ -196,7 +229,7 @@ cd ~/projects/qse
 python3 -B -W error::ResourceWarning -m unittest discover -s qse/tests -t .
 ```
 
-338 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
+356 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
 resolves) and so does `-B` (bytecode caches left in the tree are noise).
 
 ## The seven slots
@@ -245,7 +278,9 @@ qse/verification/   provenance, sufficiency, reproducibility, adversarial attack
 qse/control/        replayable state, policy, information gain, the controller
 qse/ledger/         hash-chained JSONL events, receipts, the "why" reconstruction
 qse/metrics/        QBY, BSR, EC, BC, VI, OC
+qse/cloud/          the MOONSHOT-C synthetic cloud fixture (scenario.py)
 qse/cli.py          the command line
+moonshot_cloud.py   MOONSHOT-C: the same terminal comparison, on a cloud bill, in one command
 qse/tests/          the adversarial suite
 ```
 

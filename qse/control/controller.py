@@ -363,11 +363,21 @@ class Engine:
         hypotheses: Sequence[Hypothesis],
         *,
         columns: Sequence[str] = (),
+        roles: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
+        """One test per hypothesis, plus the wide discriminating scan.
+
+        ``roles`` is the caller's declaration of what the columns *are* (``outcome``,
+        ``group``, ``exclude``, ...). Without it the planner guesses from conventional
+        business-workflow names, which is a convenience for one kind of table and a
+        silent failure for every other kind.
+        """
         if not hypotheses:
             return {"experiments": [], "audit": {"n": 0}, "coverage": {}, "best": None}
-        per_hypothesis = planner.propose(hypotheses, question=question.qid, columns=columns)
-        wide = planner.discriminating(hypotheses, question=question.qid, columns=columns)
+        per_hypothesis = planner.propose(hypotheses, question=question.qid, columns=columns,
+                                         roles=roles)
+        wide = planner.discriminating(hypotheses, question=question.qid, columns=columns,
+                                      roles=roles)
         everything = list(per_hypothesis) + list(wide)
         for experiment in everything:
             self.log("experiment", **experiment.to_dict())
@@ -452,9 +462,11 @@ class Engine:
         artifact_kind: str = "DECISION_RULE",
         builder: str | None = None,
         columns: Sequence[str] = (),
+        exclude: Sequence[str] = (),
     ) -> dict[str, Any]:
         spec = specification.from_hypothesis(
             hypothesis, list(evidence), artifact_kind=artifact_kind, columns=columns,
+            exclude=exclude,
         )
         rule = generator.default_rule(spec, list(evidence))
         artifact = generator.generate(spec, builder=builder or self.builder, rule=rule)
@@ -586,8 +598,12 @@ class Engine:
         before: Any = None,
         after: Any = None,
         columns: Sequence[str] = (),
+        roles: Mapping[str, str] | None = None,
     ) -> RunReport:
         supplied = {k: v for k, v in dict(answers or {}).items() if v}
+        # Declared once here and used in two places that must agree: the experiments
+        # (which columns to test) and the build (which columns the artifact may read).
+        excluded = planner.excluded_columns(roles)
         report = RunReport(question=raw)
         # Operator answers are STATED facts about the question, so they belong at
         # decomposition. Applying them later, one blocking slot per revision, meant
@@ -692,7 +708,7 @@ class Engine:
             return report
 
         # -- experiments and evidence ------------------------------------ #
-        planned = self.plan(question, hypotheses, columns=columns)
+        planned = self.plan(question, hypotheses, columns=columns, roles=roles)
         report.stages.append({
             "stage": "plan",
             "experiments": len(planned["experiments"]),
@@ -732,6 +748,20 @@ class Engine:
                 chosen="insufficient-evidence",
                 why="no usable evidence reaching the bar supports this explanation, so it stays open",
             )
+        # The scan is recorded, not only its findings. A run that asked "does every
+        # explanation have evidence?" and found no gap has done the work, and a ledger
+        # that shows only the gaps cannot tell that apart from never having asked --
+        # which is what happened on the first cloud fixture, where every explanation
+        # was supported and the acceptance list reported A07 as a failure.
+        self.decide(
+            "EVIDENCE_COVERAGE",
+            subject=question.qid,
+            chosen=f"{len(hypotheses) - len(gaps)}/{len(hypotheses)} explanation(s) carry usable evidence",
+            why=(f"sufficiency scanned over {len(evidence)} evidence record(s) and named "
+                 f"{len(gaps)} explanation(s) as unsupported"),
+            unsupported=sorted(gaps),
+            checked=len(hypotheses),
+        )
         survey = uncertainty_survey(question, hypotheses=hypotheses, evidence=evidence, gaps=gaps)
         if survey:
             loaded = uncertainty_load(survey)
@@ -773,7 +803,8 @@ class Engine:
         against = [e for e in evidence if e.hypothesis == winner.hid and not e.supports]
 
         # -- build -------------------------------------------------------- #
-        built = self.build(winner, evidence, artifact_kind=artifact_kind, columns=tuple(columns))
+        built = self.build(winner, evidence, artifact_kind=artifact_kind,
+                           columns=tuple(columns), exclude=excluded)
         artifact: Artifact = built["artifact"]
         report.stages.append({
             "stage": "build",

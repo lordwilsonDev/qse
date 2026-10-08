@@ -30,10 +30,16 @@ from typing import Any, Iterable, Mapping, Sequence
 
 # Deliberately the engine's own primitives: a reimplementation could disagree with
 # the number the engine acts on, which would make the audit worthless.
-from .experiment.runner import _outcome_pairs, _pearson, _xy_pairs, _youden
+from .experiment.runner import (
+    DISCRIMINATION_MARGIN_FLOOR,
+    _outcome_pairs,
+    _pearson,
+    _xy_pairs,
+    _youden,
+)
 
 __all__ = ["rank_correlates", "naive_pick", "audit", "SEPARABILITY_MARGIN",
-           "best_threshold_rule", "score_rule"]
+           "best_threshold_rule", "score_rule", "score_arms"]
 
 #: How far a column's out-of-sample correlation may fall short of the driver's
 #: before it counts as collapsed. A convention, named so it can be argued with.
@@ -43,13 +49,15 @@ SEPARABILITY_MARGIN = 0.15
 NOT_MEASUREMENTS = ("order_id", "ts_h")
 
 
-def _numeric_columns(rows: Sequence[Mapping[str, Any]], outcome: str) -> list[str]:
+def _numeric_columns(rows: Sequence[Mapping[str, Any]], outcome: str,
+                     exclude: Sequence[str] = ()) -> list[str]:
     """Columns that yield enough paired numbers to correlate at all."""
     if not rows:
         return []
+    banned = {str(name) for name in exclude} | {outcome} | set(NOT_MEASUREMENTS)
     columns = []
     for name in rows[0]:
-        if name == outcome or name in NOT_MEASUREMENTS:
+        if name in banned:
             continue
         if len(_xy_pairs(rows, name, outcome)) >= 3:
             columns.append(str(name))
@@ -61,6 +69,7 @@ def rank_correlates(
     holdout: Sequence[Mapping[str, Any]] | None = None,
     *,
     outcome: str = "failed",
+    exclude: Sequence[str] = (),
 ) -> list[dict[str, Any]]:
     """Every candidate column's correlation with the outcome, on both samples.
 
@@ -68,9 +77,16 @@ def rank_correlates(
     would have seen. ``holdout`` is what the fixture is judged on; passing none
     leaves those fields ``None`` rather than zero, since "not measured" and "no
     correlation" are different findings.
+
+    ``exclude`` names columns that are derived from the outcome -- a cloud bill, when
+    the outcome *is* "the bill was over budget". Such a column correlates with the
+    outcome near-perfectly and explains nothing; leaving it in the ranking would make
+    the naive arm look unbeatable and the whole comparison meaningless. It cannot be
+    inferred from the data (a perfect predictor and a perfect correlate look
+    identical there), so it is declared by the caller.
     """
     out: list[dict[str, Any]] = []
-    for column in _numeric_columns(fit, outcome):
+    for column in _numeric_columns(fit, outcome, exclude):
         fit_pairs = _xy_pairs(fit, column, outcome)
         fit_r = _pearson(fit_pairs)
         if fit_r is None:
@@ -104,27 +120,30 @@ def audit(
     outcome: str = "failed",
     driver: str | None = None,
     margin: float = SEPARABILITY_MARGIN,
+    exclude: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Can this fixture tell a mechanism apart from a strong correlate?
 
     ``separable`` is True only when the naive arm's pick *collapses* out of sample
     while the named driver holds. Every branch states its reason, so a reader can
-    reject the verdict without re-deriving it.
+    reject the verdict without re-deriving it. ``exclude`` is passed to
+    ``rank_correlates`` -- see there for why an outcome-derived column cannot be
+    left in the ranking.
     """
-    ranked = rank_correlates(fit, holdout, outcome=outcome)
+    ranked = rank_correlates(fit, holdout, outcome=outcome, exclude=exclude)
     pick = naive_pick(ranked)
     if not ranked:
         return {
             "separable": False, "naive_pick": None, "driver": driver, "ranked": [],
             "reason": "no candidate column yields enough paired numbers to correlate",
-            "collapsed_non_drivers": [], "survivors": [],
+            "collapsed_non_drivers": [], "survivors": [], "excluded": list(exclude),
         }
     if holdout is None:
         return {
             "separable": False, "naive_pick": pick, "driver": driver, "ranked": ranked,
             "reason": ("no holdout was supplied, so nothing can collapse out of sample and the "
                        "comparison cannot be run at all"),
-            "collapsed_non_drivers": [], "survivors": [],
+            "collapsed_non_drivers": [], "survivors": [], "excluded": list(exclude),
         }
 
     if driver is None:
@@ -132,7 +151,7 @@ def audit(
             "separable": False, "naive_pick": pick, "driver": None, "ranked": ranked,
             "reason": ("no driver was named, so there is nothing for the naive pick to be "
                        "measured against"),
-            "collapsed_non_drivers": [], "survivors": [],
+            "collapsed_non_drivers": [], "survivors": [], "excluded": list(exclude),
         }
 
     by_name = {r["column"]: r for r in ranked}
@@ -141,7 +160,7 @@ def audit(
         return {
             "separable": False, "naive_pick": pick, "driver": driver, "ranked": ranked,
             "reason": f"the named driver {driver!r} is not a measurable column in this fixture",
-            "collapsed_non_drivers": [], "survivors": [],
+            "collapsed_non_drivers": [], "survivors": [], "excluded": list(exclude),
         }
 
     driver_strength = abs(driver_row["holdout"] or 0.0)
@@ -182,6 +201,7 @@ def audit(
         "collapsed_non_drivers": collapsed,
         "survivors": survivors,
         "margin": margin,
+        "excluded": list(exclude),
         "reason": reason,
     }
 
@@ -276,6 +296,50 @@ def score_rule(
         "specificity": round(specificity, 4),
         "flagged": flagged,
         "n": len(pairs),
+    }
+
+
+def score_arms(
+    naive_rule: Mapping[str, Any],
+    engineered_rule: Mapping[str, Any],
+    fit: Sequence[Mapping[str, Any]],
+    holdout: Sequence[Mapping[str, Any]],
+    *,
+    outcome: str = "failed",
+    margin: float = DISCRIMINATION_MARGIN_FLOOR,
+) -> dict[str, Any]:
+    """Score both arms by one statistic and decide, in **one** place, whether to credit.
+
+    The decision rule, not the phrasing, is what has to be single-sourced: the
+    moonshot's terminal claim is "engineered questioning beats the analyst with no
+    question engineering", and if two callers each decided that for themselves they
+    could disagree without either being wrong by its own lights.
+
+    An unvalidated rule (chosen by construction, not by measurement) is never
+    credited, however good its separation looks: a rule that wins by luck is not
+    evidence that questioning created the capability.
+    """
+    arms: list[dict[str, Any]] = []
+    for name, rule in (("naive", naive_rule), ("engineered", engineered_rule)):
+        arms.append({
+            "arm": name,
+            "validated": bool(rule.get("validated")),
+            "basis": str(rule.get("basis", "")),
+            "fit": score_rule(rule, fit, outcome=outcome),
+            "holdout": score_rule(rule, holdout, outcome=outcome),
+        })
+    naive_score, engineered_score = arms[0]["holdout"], arms[1]["holdout"]
+    both_scored = bool(naive_score.get("scored") and engineered_score.get("scored"))
+    return {
+        "arms": arms,
+        "margin": margin,
+        "engineered_wins": bool(
+            arms[1]["validated"] and both_scored
+            and engineered_score["youden"] > naive_score["youden"] + margin
+        ),
+        "engineered_unscored": None if engineered_score.get("scored")
+        else str(engineered_score.get("reason", "")),
+        "engineered_unvalidated": bool(engineered_score.get("scored")) and not arms[1]["validated"],
     }
 
 

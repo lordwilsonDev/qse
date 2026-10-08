@@ -19,12 +19,43 @@ object that can be logged, replayed and re-run unchanged.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 from ..core.experiment import Experiment, make_experiment
 from ..core.hypothesis import Hypothesis
 
-__all__ = ["RUNNER_FOR", "propose", "discriminating", "best_to_run", "coverage"]
+__all__ = ["RUNNER_FOR", "ENGINE_ROLE_KEYS", "excluded_columns", "roles_for",
+           "propose", "discriminating", "best_to_run", "coverage"]
+
+#: Role keys the engine consumes itself rather than handing to a runner.
+ENGINE_ROLE_KEYS = ("exclude",)
+
+
+def roles_for(roles: Mapping[str, str] | None) -> dict[str, str]:
+    """The declared runner roles, minus the engine-level keys and empty values.
+
+    A declaration is a fact the caller supplies, so an empty value is dropped rather
+    than bound: binding ``outcome=`` would make the runner look for a column with no
+    name instead of reporting the role it actually needs.
+    """
+    out: dict[str, str] = {}
+    for key, value in dict(roles or {}).items():
+        text = str(value).strip()
+        if key in ENGINE_ROLE_KEYS or not text:
+            continue
+        if "=" in text:
+            raise ValueError(
+                f"declared role {key!r} has a value containing '=' ({text!r}); bindings are "
+                "written as role=value, so a value cannot contain one"
+            )
+        out[str(key)] = text
+    return out
+
+
+def excluded_columns(roles: Mapping[str, str] | None) -> tuple[str, ...]:
+    """Columns declared as derived from the outcome, so never candidates or inputs."""
+    raw = str(dict(roles or {}).get("exclude", ""))
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 #: Which runner a hypothesis's structure calls for. Order matters only for reads.
 RUNNER_FOR: dict[tuple[str, str], str] = {
@@ -63,12 +94,15 @@ def _runner_for(hypothesis: Hypothesis) -> str:
     return RUNNER_FOR.get((hypothesis.mechanism, "*"), _DEFAULT_RUNNER)
 
 
-def _binder(runner: str, columns: Sequence[str]) -> tuple[str, ...]:
-    """Roles bound to plausible column names, plus the columns themselves.
+def _guess(runner: str, columns: Sequence[str]) -> tuple[dict[str, str], list[str]]:
+    """The roles and bare columns a runner would be bound to with no declaration.
 
-    Column names are guessed from conventional business-workflow field names and
-    are *declared*, not assumed: a runner that cannot find its column reports
-    ``ran: False`` with the missing names rather than inventing a result.
+    Column names are guessed from conventional *business-workflow* field names. That
+    guess is a convenience for tables that happen to use those names, not a
+    capability: on any other domain it silently binds nothing, every experiment comes
+    back ``ran: False``, and the engine looks broken when it has simply been given no
+    way to be told what the columns are. ``_binder`` therefore layers a caller's
+    declaration on top of this guess rather than replacing it.
     """
     pool = list(columns)
     by_name = {c.lower(): c for c in pool}
@@ -90,25 +124,51 @@ def _binder(runner: str, columns: Sequence[str]) -> tuple[str, ...]:
         return tuple(n for n in names if n in pool) or tuple(names[:1])
 
     if runner == "precursor_detection":
-        return ("precursor=" + precursor, "outcome=" + outcome, "time=" + time_col, "min_hours=6") + declared(
-            precursor, outcome, time_col
-        )
+        return ({"precursor": precursor, "outcome": outcome, "time": time_col,
+                 "min_hours": "6"}, list(declared(precursor, outcome, time_col)))
     if runner in ("aggregation_check", "correlation_split"):
         x_col = supplier if runner == "correlation_split" and supplier in pool else precursor
-        return ("x=" + x_col, "y=" + outcome, "group=" + group) + declared(x_col, outcome, group)
+        return ({"x": x_col, "y": outcome, "group": group},
+                list(declared(x_col, outcome, group)))
     if runner == "variance_compare":
-        return ("value=" + precursor, "group=" + group) + declared(precursor, group)
+        return ({"value": precursor, "group": group}, list(declared(precursor, group)))
     if runner == "coverage_scan":
         # A comma list, not repeated `column=` keys: `bindings()` returns a dict,
         # so a repeated role would silently collapse to its last value.
         watched = pool or [precursor]
-        return ("columns=" + ",".join(watched),) + declared(*watched)
+        return ({"columns": ",".join(watched)}, list(declared(*watched)))
     if runner == "counterfactual_replay":
-        return ("field=" + precursor, "op=>=", "threshold=24", "outcome=" + outcome) + declared(precursor, outcome, time_col)
+        return ({"field": precursor, "op": ">=", "threshold": "24", "outcome": outcome},
+                list(declared(precursor, outcome, time_col)))
     if runner == "discrimination_scan":
         candidates = ",".join(pool[:6]) if pool else precursor
-        return ("outcome=" + outcome, "candidates=" + candidates) + declared(*pool)
-    return declared(*pool) if pool else (precursor,)
+        return ({"outcome": outcome, "candidates": candidates}, list(declared(*pool)))
+    return ({}, list(declared(*pool)) if pool else [precursor])
+
+
+def _binder(runner: str, columns: Sequence[str],
+            roles: Mapping[str, str] | None = None) -> tuple[str, ...]:
+    """Roles bound to column names, plus the columns themselves.
+
+    The guess is made first and the caller's declaration is layered over it, so a
+    declared ``outcome`` fixes every runner at once while the roles the caller did not
+    mention keep their conventional guess. Everything stays *declared, not assumed*: a
+    runner that cannot find its column reports ``ran: False`` with the missing name
+    rather than inventing a result.
+    """
+    declared_roles = roles_for(roles)
+    excluded = set(excluded_columns(roles))
+    pool = [str(c) for c in columns if str(c) not in excluded]
+    bound, bare = _guess(runner, pool)
+    bound.update(declared_roles)
+    # An outcome-derived column is never a candidate explanation, even if the caller
+    # listed it in a multi-valued role: the whole point of declaring it is that it
+    # cannot be scored as an explanation for the thing it is computed from.
+    for role in ("columns", "candidates"):
+        if role in bound:
+            kept = [c for c in bound[role].split(",") if c.strip() and c.strip() not in excluded]
+            bound[role] = ",".join(c.strip() for c in kept)
+    return tuple(f"{k}={v}" for k, v in bound.items()) + tuple(bare)
 
 
 def propose(
@@ -116,6 +176,7 @@ def propose(
     *,
     question: str,
     columns: Sequence[str] = (),
+    roles: Mapping[str, str] | None = None,
 ) -> list[Experiment]:
     """One specific, runnable, refutable test per hypothesis."""
     out: list[Experiment] = []
@@ -147,7 +208,7 @@ def propose(
                 ),
                 runner=runner,
                 discriminates=(hypothesis.hid,),
-                required_data=_binder(runner, columns),
+                required_data=_binder(runner, columns, roles),
                 cost=cost,
                 duration_h=duration,
             )
@@ -160,6 +221,7 @@ def discriminating(
     *,
     question: str,
     columns: Sequence[str] = (),
+    roles: Mapping[str, str] | None = None,
 ) -> list[Experiment]:
     """One experiment that separates as many competing hypotheses as possible.
 
@@ -169,8 +231,13 @@ def discriminating(
     """
     if len(hypotheses) < 2:
         return []
-    candidates = ",".join(columns[:8]) if columns else "queue_wait_h,supplier_lead_days,staff_hours"
-    outcome = next((c for c in columns if any(k in c.lower() for k in ("outcome", "late", "failed"))), "failed")
+    declared = roles_for(roles)
+    excluded = set(excluded_columns(roles))
+    pool = [str(c) for c in columns if str(c) not in excluded]
+    candidates = declared.get("candidates") or (
+        ",".join(pool[:8]) if pool else "queue_wait_h,supplier_lead_days,staff_hours")
+    outcome = declared.get("outcome") or next(
+        (c for c in pool if any(k in c.lower() for k in ("outcome", "late", "failed"))), "failed")
     return [
         make_experiment(
             hypothesis=hypotheses[0].hid,
@@ -193,7 +260,7 @@ def discriminating(
             ),
             runner="discrimination_scan",
             discriminates=tuple(h.hid for h in hypotheses),
-            required_data=(f"outcome={outcome}", f"candidates={candidates}", *columns[:8]),
+            required_data=(f"outcome={outcome}", f"candidates={candidates}", *pool[:8]),
             cost=4.0,
             duration_h=8.0,
         )

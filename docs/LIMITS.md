@@ -246,6 +246,54 @@ The cut was measured on the source that decided. The fitting sample's own best c
 for the same column is also `6.0`, so nothing about the *threshold* differs between
 the two periods -- but it is not validated on both, and this file will not say it is.
 
+## The same comparison on a second question, in a second domain
+
+MOONSHOT-C (`moonshot_cloud.py`) points the engine at a cloud bill finance cannot
+explain and runs the same terminal comparison. The fixture is
+`qse/cloud/scenario.py` (written to `examples/cloud_fit.json` and
+`examples/cloud_holdout.json`). The real driver is provisioned-but-unused capacity
+(`idle_hours`); the fitting-period confound is `vcpus`, which only holds there
+because the idleness metric was estimated by a sampling agent and `vcpus` was taken
+from a review list that tracked true idleness. `billed_usd` is declared derived from
+the outcome (`over_budget` is computed from it) and excluded, or the bill would
+explain the overspend perfectly and nothing else could compete.
+
+One command, `python3 moonshot_cloud.py`, gates on separability, builds the
+engineered arm on both periods, and scores both arms:
+
+```text
+    arm          rule                       fit J  holdout J  flagged
+    naive        vcpus >= 16.0               +0.885     -0.003      165
+    engineered   idle_hours >= 13.0          +0.603     +0.969      178
+
+  named by cloud-holdout: idle_hours (separation 0.9687, margin 0.5924 over retries_millions)
+  cloud-fit decided on 'vcpus' instead (separation 0.885) -- rejected, it does not replicate
+```
+
+The naive arm collapses out of sample; the engineered arm names a field and beats it,
+and `moonshot_cloud.py` exits `0` with the 17-item acceptance list at `17/17`. But the
+same qualification as the orders pair applies, in a sharper form: **the field was named
+by the second period, not the fitting one.** The fitting period's scan decides on
+`vcpus` (`0.885`) and that decision is *rejected*, because `vcpus` does not replicate on
+the holdout. That rejection is the finding the cloud domain was built to produce, and
+it is a real limit: on the fitting period alone the engine would have shipped `vcpus`.
+
+Two further honest limits the cloud run exposes:
+
+- **A declared probe can fail to fire.** The planner routes some hypotheses to
+  `counterfactual_replay` and binds `threshold=24` before seeing any data. `idle_hours`
+  never reaches 24 on the holdout, so two planned probes record `EXPERIMENT_NOT_RUN`
+  and produce no evidence. This is a fact about the plan, not the data; Q14 flags it.
+- **The cross-source requirement can reject the truth.** A field that genuinely holds
+  on only one period is rejected, because there is no other period to confirm it. The
+  control prefers a field two sources agree on, which is the right default and is not
+  the same as always finding the right field.
+
+The cloud fixture is synthetic, generated to be findable, and its parameters are
+recorded in `qse/cloud/scenario.py` as a tuning log. It is not a real company's
+records, and the reading is the same as for the orders fixture: finding structure in a
+table built to contain structure is weaker than finding it in the wild.
+
 ## Two residual limits of the scan and the artifact, both visible in the output
 
 - **The scan measures one direction.** `_youden` scans `value >= threshold` only, so

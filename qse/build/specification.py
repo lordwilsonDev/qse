@@ -125,12 +125,21 @@ def from_hypothesis(
     *,
     artifact_kind: str = "DECISION_RULE",
     columns: tuple[str, ...] | list[str] = (),
+    exclude: tuple[str, ...] | list[str] = (),
 ) -> BuildSpec:
-    """A specification derived from the hypothesis, not from a template."""
+    """A specification derived from the hypothesis, not from a template.
+
+    ``exclude`` names columns the caller declared as *derived from the outcome*. They
+    are treated exactly like the outcome itself: never an input the artifact reads to
+    decide, and never a field it may flag on. That is not inferable from data -- a
+    perfect predictor and a perfect correlate are the same numbers -- so it is
+    supplied. See ``qse/baseline.py::rank_correlates`` for the same declaration on the
+    comparison side.
+    """
     raw_inputs = measured_columns(evidence) or tuple(str(c) for c in columns)
     # The outcome is what the artifact is judged against, never an input it reads to
     # decide. Dropping it here is what keeps a generated rule from sitting on it.
-    outcomes = set(outcome_columns(evidence))
+    outcomes = set(outcome_columns(evidence)) | {str(c) for c in exclude}
     inputs = tuple(i for i in raw_inputs if i not in outcomes) or raw_inputs
     title = f"{hypothesis.mechanism.title()} rule for {hypothesis.locus.lower()} bottleneck detection"
     sections = (

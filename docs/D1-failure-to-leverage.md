@@ -431,6 +431,209 @@ the next question is recorded above. Closed at `LEVERAGE_CAPTURED`.
 
 ---
 
+# D1 — Failure-to-Leverage: the domain the engine could not be told about
+
+Status: **LEVERAGE_CAPTURED**
+Date: 2026-10-08
+Method source: BlackSwanLabz Research Lab, *D1 — Failure-to-Leverage Compiler*.
+
+## research id
+
+`qse-d1-0004` — pointed at a second question, in a second domain, the engine found
+nothing and said nothing had gone wrong.
+
+## problem
+
+MOONSHOT-C reruns the moonshot's terminal comparison on a second, unrelated
+question — a cloud bill finance cannot explain — and ships it as one script,
+`moonshot_cloud.py`. On a real cloud table the engine reported "no explanation
+found" while every experiment in the plan had come back `ran: false`. The engine
+was not broken and the data was not wrong: the planner guessed conventional
+*business-workflow* column names, and a cloud table has none of them.
+
+## observed event
+
+`planner._guess` binds `outcome=failed`, `precursor=queue_wait_h`,
+`group=shift`, `field=precursor`, and so on. On the shipped orders fixture those
+names exist by coincidence, so the guess never showed. On cloud data every runner
+came back `ran: false` — "needs column `queue_wait_h`" — and the run recorded no
+evidence and reported no defect, because "no experiment could run" is not itself a
+refusal. Four further faults surfaced behind it:
+
+- **The outcome-derived column.** `billed_usd` correlates with the `over_budget`
+  flag near-perfectly, because the flag is computed from it. With no way to declare
+  that, the naive arm picked the bill to explain the bill.
+- **One period is not enough.** The fitting period's own scan decided confidently on
+  `vcpus` — a column that only holds on that period because the idleness metric was
+  estimated by a sampling agent wrong in both directions and `vcpus` was taken from a
+  review list that tracked true idleness. The column that ships must be one the
+  other source still supports.
+- **The probe rule.** The planner binds `threshold=24` before it has seen any data.
+  `counterfactual_replay` reported that rule under `rule`, the key the builder reads
+  as a *measured* rule, so a data-blind placeholder could become the artifact's
+  detector.
+- **A07's false alarm.** A07 required a `KNOWLEDGE_GAP` decision. The cloud run
+  found none — every explanation had usable evidence — so A07 failed a run that had
+  simply found no gap.
+
+## assumptions (all checked)
+
+- A column name is a fact about a table, not something the engine can infer. The
+  caller must be able to declare it.
+- A column computed from the outcome is never an explanation for it. The caller must
+  be able to say so, and the default must be to keep it out, not to keep it in.
+- A measurement made on one period is not a measurement that holds on another until
+  the other source says it does.
+- A threshold nobody measured is a probe, and the key it is reported under decides
+  whether a builder can mistake it for a measurement.
+
+## variables and provenance
+
+- target failure, not environment or measurement failure;
+- provenance: `qse/experiment/planner.py::{_guess,_binder,roles_for,excluded_columns}`,
+  `qse/experiment/runner.py::counterfactual_replay`, `qse/build/generator.py::{separation_of,default_rule}`,
+  `qse/baseline.py::score_arms`, `qse/cli.py::{acceptance,detector_provenance,cmd_fixture}`,
+  `qse/control/controller.py::run`.
+
+## failure (retained)
+
+The first MOONSHOT-C run recorded **0 evidence** and reported nothing wrong, and
+that run's shape is kept as the thing the entry is about. So is the naive arm's
+cloud pick: `vcpus >= 16.0`, fit J `+0.885`, holdout J `-0.003`.
+
+## inversion
+
+| Assumption treated as settled | Inverted |
+|---|---|
+| "The planner can guess the columns." | "A guess is a convenience for one domain's naming, not a capability; a caller must be able to *tell* the engine what a column is." |
+| "Any column can explain the outcome." | "A column computed from the outcome explains nothing — it *is* the outcome, renamed." |
+| "A scan that decided has named the field." | "A scan has named a field *for the period it ran on*; another period can show the choice was an artifact of that period." |
+| "A runner's rule is a rule." | "A rule declared before any data was seen is a probe, and the key it travels under must say so." |
+| "Found no gap" and "never looked" are the same record." | "They are different findings, and a check that accepts only the first fails the second." |
+
+## missing variable
+
+**The caller's declaration.** The engine had one implicit table of column names, in
+`_guess`, and no way to be told a different one — so every domain but the one it was
+written against looked like a dataset with no usable columns.
+
+## causal attribution
+
+The primary defect is in **planning** (`_guess` treated as the only source of column
+names, rather than as a fallback under a declaration). Amplified by **specification**
+(no way to exclude the outcome's derivatives), by **rule construction** (the probe's
+key), and by a check (**A07**). It is *not* in the runners, the ledger, the fixture,
+or the verifier — those behaved correctly on a table they were never told how to
+read.
+
+## leverage — the controls
+
+1. **Declared roles.** `roles_for(roles)` separates engine keys from runner roles;
+   `_binder(runner, columns, roles)` makes the guess *first* and layers the caller's
+   declaration over it, so a declared `outcome` fixes every runner at once while
+   undeclared roles keep their conventional guess. `Engine.run`/`plan`/`build` thread
+   it through; the CLI exposes it as repeated `--role ROLE=COLUMN`.
+2. **`exclude`.** `excluded_columns(roles)` names columns derived from the outcome;
+   they are stripped from `rank_correlates`/`audit`, from `specification.outcomes`
+   and from every multi-valued role, so a derived column is never a candidate and
+   never an artifact input. `--exclude COLUMN` on `run`/`fixture`/`compare`.
+3. **Cross-source replication.** `separation_of(observed, field)` reads what a scan
+   measured for a field, and it distinguishes "this source ranked the field low"
+   from "this source never ranked it" (`None` is not `0.0`). `default_rule` ships a
+   scan-decided field only if *every other* scan that ranked it measured
+   `abs(separation) > CORRELATION_FLOOR`; a field that fails is named in the `basis`
+   — the rejection is the finding, not a silent drop.
+4. **The probe.** `counterfactual_replay` reports its hypothetical rule under
+   `probe_rule` with `probe: True`, never under `rule`, so the builder cannot read a
+   data-blind placeholder as a measurement.
+5. **`score_arms`.** The credit decision (does the engineered arm beat the naive one
+   by the margin, and was the engineered rule validated?) lives in one function,
+   `baseline.score_arms`, so `compare` and `moonshot_cloud.py` cannot disagree about
+   what a win is.
+6. **`EVIDENCE_COVERAGE`.** The controller records a decision after the
+   `KNOWLEDGE_GAP` loop — `chosen` = how many explanations carry usable evidence,
+   `unsupported`, `checked` — and **A07** passes when that decision exists, so
+   "scanned and found none" passes while an empty ledger still fails.
+7. **Exit-code honesty in the script.** `moonshot_cloud.py` raises `Unusable` (and
+   returns `2`) rather than `SystemExit(str)`, because `SystemExit` with a string
+   exits `1` — which would report unusable input as a *defect* and make the exit code
+   a different answer from the printed one.
+
+Ranked by impact × recurrence × generality ÷ cost: controls 1–2 score highest — they
+close the class "the engine was never told what a column is" everywhere, and the
+class "a rule read the thing it predicts" through a second door. 3–4 are the honesty
+of a win and a probe. 5 centralises the credit rule so two callers cannot differ. 6
+fixes a false alarm. 7 keeps the exit code and the page from disagreeing.
+
+## downstream dependencies
+
+`moonshot_cloud.py`, `qse/cloud/scenario.py`, `qse.cli run/fixture/compare/checks`,
+`qse.baseline` (all three public functions gained `exclude=`, plus the new
+`score_arms`), the engine's plan/build stages, `CLAIMS.md` C-013–C-017, and the whole
+suite. All re-verified after the change.
+
+## tests (reusable)
+
+- `test_cloud_moonshot.TheCloudFixture.test_the_fixture_can_punish_the_naive_arm_once_the_outcome_derived_column_is_declared`
+- `test_cloud_moonshot.TheCloudFixture.test_the_bill_is_never_offered_as_an_explanation_for_the_bill`
+- `test_cloud_moonshot.ThePlannerHasToBeTold.test_without_declared_roles_every_experiment_fails_to_find_its_columns`
+- `test_cloud_moonshot.ThePlannerHasToBeTold.test_with_declared_roles_the_same_experiments_run`
+- `test_cloud_moonshot.CrossSourceReplication.test_a_field_the_other_source_rejects_is_not_shipped`
+- `test_cloud_moonshot.CrossSourceReplication.test_a_field_that_holds_on_neither_source_is_not_named`
+- `test_cloud_moonshot.TheProbeRule.test_the_replay_runner_reports_its_hypothetical_rule_as_a_probe`
+- `test_cloud_moonshot.TheAcceptanceListOnACleanRun.test_a07_passes_when_sufficiency_was_scanned_and_found_no_gap`
+- `test_cloud_moonshot.TheMoonshotScript.test_the_synthetic_run_answers_its_own_question`
+- `test_cloud_moonshot.TheMoonshotScript.test_real_data_without_a_named_outcome_is_unusable`
+
+The **second control direction**, which D1 #2's lesson demands:
+`test_without_declared_roles_every_experiment_fails_to_find_its_columns` pins the
+*defect* — with no declaration, every experiment fails — so the fix is shown to be a
+widening of what can be told to the engine, not a change to what the engine does with
+what it knows. `test_a_field_that_holds_on_neither_source_is_not_named` requires the
+refusal to still refuse when replication genuinely fails, and
+`test_the_bill_is_never_offered_as_an_explanation_for_the_bill` requires the
+comparison to be *meaningless* without the exclusion, so the control is load-bearing.
+
+## steel (the boundary checks)
+
+- **Boundary:** every change is in QSE's own planner/builder/checks and the new script;
+  no fixture was reshaped to make a result, and the synthetic cloud fixture's
+  parameters are documented in `qse/cloud/scenario.py` as a tuning record.
+- **The comparison's own boundary, stated plainly:** on the cloud fixture the field
+  `idle_hours` is named by the scan over the **second** period, and the fitting
+  period's scan decides on `vcpus` instead (`0.885`), which does not replicate and is
+  rejected rather than shipped. So this, too, is **not a single-table win**, and
+  `moonshot_cloud.py` and `compare` print the provenance rather than burying it.
+- **Measurement context:** obtained under a frozen clock (`2026-10-08T12:00:00Z`);
+  the verdict is clock-free.
+- **Observer:** the session changed QSE's own planner while pointing QSE at a new
+  domain — a target failure. The no-declaration run was reproduced first, which is
+  what showed the experiments were failing on guessed names.
+- **A planned test that cannot fire is honest, not hidden:** the counterfactual probes
+  bind `threshold=24`; `idle_hours` never reaches 24 on the cloud holdout, so the
+  probes record `EXPERIMENT_NOT_RUN` and produce no evidence. `test_with_declared_roles_the_same_experiments_run`
+  asserts the only unrunnable tests are those declared probes, rather than asserting
+  that none may exist. Q14 reports the same fact as a planning defect.
+
+## new question (the compiler's real output)
+
+> The probe binds a threshold before it has seen any data, and on this fixture the
+> value it happened to pick (`24`) cannot fire. Should a runner that is answering "what
+> threshold does this data support?" be allowed to choose its own candidate set of
+> thresholds from the data it has, and report *which* candidate rule it replayed — or
+> does that turn a declared probe into a fitted measurement and lose the distinction
+> this entry just made?
+
+That question did not exist before this failure. It is the boundary between a probe
+and a fit, and it is not obvious which side keeps the engine honest.
+
+## stopping condition
+
+No currently identified influential unknown remains untested at this boundary, and
+the next question is recorded above. Closed at `LEVERAGE_CAPTURED`.
+
+---
+
 ## Answered since (cross-reference)
 
 - Entry #1's new question — "should the engine emit a detector at all, or an explicit
@@ -442,3 +645,12 @@ the next question is recorded above. Closed at `LEVERAGE_CAPTURED`.
 - Entry #2's new question — should each run carry a run/session id, so an id repeated
   *within* one run can be told from a repeat across runs? — remains open. The ledger
   still holds a history rather than a run.
+- Entry #3's new question — should a detector that names a field be built for the
+  hypothesis whose mechanism that field is, even when another hypothesis won the
+  synthesis? — remains open. On MOONSHOT-C the artifact is titled for the winning
+  hypothesis while its rule sits on `idle_hours`, the same disagreement entry #3
+  recorded, now reproduced in a second domain.
+- Entry #4's new question — should a probe be allowed to choose its own candidate
+  thresholds from the data, or does that turn a declared probe into a fitted
+  measurement? — is open, and it is the boundary the probe/measurement distinction
+  rests on.
