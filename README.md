@@ -52,6 +52,7 @@ python3 -m qse.cli fixture  --scenario examples/orders_scenario.json \
     --holdout examples/orders_holdout.json --driver handoffs   # can this fixture measure anything?
 python3 -m qse.cli compare  --scenario examples/orders_scenario.json \
     --holdout examples/orders_holdout.json --driver handoffs   # score naive vs engineered, same metric
+python3 -m qse.cli verify-claims --run                         # check the staged claims against reality
 python3 -m qse.cli metrics  --ledger /tmp/qse.jsonl     # QBY, BSR, EC, BC, VI, OC
 python3 -m qse.cli replay   --ledger /tmp/qse.jsonl     # rebuild the run from the ledger alone
 python3 -m qse.cli why <qid> --ledger /tmp/qse.jsonl    # reconstruct why that question was asked
@@ -146,6 +147,15 @@ controls: the generator's fallback first selected the *outcome* as the rule's fi
 and with nothing measured the engine emits an explicit "no usable detector"
 artifact rather than an arbitrary one. The failure, the inversion and the controls
 are recorded in [docs/D1-failure-to-leverage.md](docs/D1-failure-to-leverage.md).
+
+## Claims
+
+QSE makes claims about itself, and `CLAIMS.md` stages each one with its evidence, how
+to check it, and the exit code that check must return. `qse.cli verify-claims --run`
+executes the runnable checks and fails if any claim has drifted from reality.
+**Status** is `verified`, `pending` (not yet checked -- never restate as fact) or
+`retracted` (checked and found wrong -- kept, not deleted), following the
+BlackSwanLabz Research Lab's CLAIMS discipline. A claim nobody can fail is decoration.
 
 ## The close-out
 

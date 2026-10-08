@@ -21,7 +21,13 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import __version__, baseline as baseline_mod, closeout as closeout_mod, metrics as metrics_mod
+from . import (
+    __version__,
+    baseline as baseline_mod,
+    claims as claims_mod,
+    closeout as closeout_mod,
+    metrics as metrics_mod,
+)
 from .control.controller import (
     DEFAULT_BUILDER,
     DEFAULT_VERIFIER,
@@ -564,7 +570,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
             fdesc = f"{rule.get('field')} {rule.get('op')} {rule.get('threshold')}"
         fj = arm["fit"].get("youden")
         hj = arm["holdout"].get("youden")
-        mark = "" if arm["validated"] else "  (unvalidated)"
+        mark = "  (unvalidated)" if (rule.get("field") and not arm["validated"]) else ""
         lines.append(f"    {arm['arm']:<12} {fdesc + mark:<34} "
                      f"{('n/a' if fj is None else format(fj, '+.3f')):>7} "
                      f"{('n/a' if hj is None else format(hj, '+.3f')):>10} "
@@ -580,6 +586,36 @@ def cmd_compare(args: argparse.Namespace) -> int:
             "engineered_wins": engineered_wins, "margin": margin, "verdict": verdict}, args.json,
            "\n".join(lines))
     return OK if engineered_wins else DEFECT
+
+
+def cmd_verify_claims(args: argparse.Namespace) -> int:
+    """Check the staged claims file: format, statuses, evidence, and optionally checks.
+
+    Exit 0 only when every claim is well-formed, its evidence resolves, and -- with
+    ``--run`` -- every runnable check exits the code the claim declares. A claim
+    that has drifted from reality fails here rather than being restated in prose.
+    """
+    root = Path(args.root).resolve()
+    file = Path(args.file)
+    if not file.is_absolute():
+        file = root / file
+    if not file.exists():
+        raise Unusable(f"claims file not found: {file}")
+    out = claims_mod.verify(file, root, run=args.run)
+    lines = [f"  {out['claims']} claim(s); structure and evidence checked"
+             + (", runnable checks executed" if args.run else " (checks not executed; pass --run)")]
+    for row in out["structure"]["rows"]:
+        mark = "ok  " if row["ok"] else "FAIL"
+        note = "" if row["ok"] else f"  <- missing: {', '.join(row['evidence_missing'])}"
+        lines.append(f"    [{mark}] {row['id']:<6} {row['status']:<9}{note}")
+    for row in out["execution"]["rows"]:
+        mark = "ok  " if row["ok"] else "FAIL"
+        lines.append(f"    [{mark}] {row['id']:<6} check exit {row['got']} (expected {row['expected']})")
+    lines.append("")
+    lines.append(f"  {len(out['problems'])} problem(s)" if out["problems"] else "  no problems")
+    lines.extend(f"    - {item}" for item in out["problems"])
+    _print(out, args.json, "\n".join(lines))
+    return OK if out["ok"] else DEFECT
 
 
 def cmd_selftest(args: argparse.Namespace) -> int:
@@ -684,6 +720,12 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--authority", default="VP of Operations")
     compare.add_argument("--builder", default=DEFAULT_BUILDER)
     compare.add_argument("--verifier", default=DEFAULT_VERIFIER)
+
+    verify_claims = add("verify-claims", cmd_verify_claims,
+                        "check the staged claims file against reality")
+    verify_claims.add_argument("--file", default="CLAIMS.md")
+    verify_claims.add_argument("--root", default=".", help="root the evidence paths resolve against")
+    verify_claims.add_argument("--run", action="store_true", help="execute the runnable checks")
 
     selftest = add("selftest", cmd_selftest, "run the shipped scenario and then the acceptance list")
     selftest.add_argument("--ledger", default="/tmp/qse-selftest.jsonl")
