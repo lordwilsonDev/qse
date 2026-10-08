@@ -292,11 +292,13 @@ class SpecificationAndGeneration(unittest.TestCase):
         self.assertEqual(float(rule["threshold"]), 5.0)
         self.assertTrue(rule["validated"])
 
-    def test_without_evidence_the_rule_says_it_is_unvalidated(self):
+    def test_without_evidence_the_rule_says_it_is_unvalidated_and_has_no_detector(self):
         spec = specification.from_hypothesis(self.h, [])
         rule = generator.default_rule(spec, [])
         self.assertFalse(rule["validated"])
         self.assertIn("unvalidated", rule["basis"])
+        self.assertIsNone(rule["field"], "with nothing measured there is no field to flag on")
+        self.assertFalse(rule["detector"])
 
     def test_a_generated_rule_never_sits_on_the_outcome_it_predicts(self):
         # the D1 control: a decision rule may not read the outcome it is judged
@@ -313,8 +315,10 @@ class SpecificationAndGeneration(unittest.TestCase):
         self.assertNotIn("failed", spec.inputs, "the outcome is not an input the artifact reads")
         rule = generator.default_rule(spec, [naming])
         self.assertNotEqual(rule["field"], "failed", "a rule may not read the outcome to predict it")
-        self.assertFalse(rule["validated"], "a fallback chosen by construction is not measured")
-        self.assertIn("by construction", rule["basis"])
+        self.assertIsNone(rule["field"],
+                          "with no measured field the honest artifact is detector-less")
+        self.assertFalse(rule["detector"])
+        self.assertFalse(rule["validated"], "a fallback is not measured")
 
     def test_the_generated_module_is_valid_python(self):
         spec = specification.from_hypothesis(self.h, self.evidence)
@@ -340,6 +344,15 @@ class Execution(unittest.TestCase):
         spec = specification.from_hypothesis(self.h, evidence, columns=("handoffs", "failed"))
         self.artifact = generator.generate(spec, builder="b",
                                            rule=generator.default_rule(spec, evidence))
+
+    def test_a_detector_less_artifact_runs_flags_nothing_and_says_why(self):
+        # the D1 answer: with nothing measured the engine emits an explicit
+        # "no usable detector" artifact rather than an arbitrary field
+        spec = specification.from_hypothesis(self.h, [])
+        artifact = generator.generate(spec, builder="b", rule=generator.default_rule(spec, []))
+        outcome = execute(artifact, rows=rows_of()[:20])
+        self.assertTrue(outcome["ran"])
+        self.assertEqual((outcome.get("observed") or {}).get("flagged"), 0)
 
     def test_the_generated_module_runs_and_reports_its_own_output(self):
         outcome = execute(self.artifact, rows=rows_of()[:40])

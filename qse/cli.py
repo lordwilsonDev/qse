@@ -556,8 +556,12 @@ def cmd_compare(args: argparse.Namespace) -> int:
              f"    {'arm':<12} {'rule':<34} {'fit J':>7} {'holdout J':>10} {'flagged':>8}"]
     for arm in arms:
         rule = naive_rule if arm["arm"] == "naive" else eng_rule
-        fdesc = (f"{rule.get('field')} {rule.get('op')} {rule.get('threshold')}"
-                 if rule else "(no rule built)")
+        if not rule:
+            fdesc = "(no rule built)"
+        elif rule.get("field") is None:
+            fdesc = "(no detector)"
+        else:
+            fdesc = f"{rule.get('field')} {rule.get('op')} {rule.get('threshold')}"
         fj = arm["fit"].get("youden")
         hj = arm["holdout"].get("youden")
         mark = "" if arm["validated"] else "  (unvalidated)"

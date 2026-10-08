@@ -250,7 +250,7 @@ class TheArmComparison(unittest.TestCase):
         self.assertEqual(self._cli(["compare", "--scenario", scenario,
                                     "--holdout", scenario, "--driver", "handoffs"]), 1)
 
-    def test_an_unvalidated_engineered_rule_is_reported_and_not_credited(self):
+    def test_the_engineered_arm_with_no_detector_is_reported_and_not_credited(self):
         import json
 
         out, err = io.StringIO(), io.StringIO()
@@ -264,9 +264,11 @@ class TheArmComparison(unittest.TestCase):
         err.close()
         engineered = next(a for a in payload["arms"] if a["arm"] == "engineered")
         self.assertFalse(engineered["validated"])
+        self.assertFalse(engineered["holdout"]["scored"],
+                         "with no detector there is nothing to score")
         self.assertFalse(payload["engineered_wins"],
-                         "an unvalidated rule must not be credited even if it scores")
-        self.assertIn("unvalidated", payload["verdict"])
+                         "an uncreditable rule must not win the comparison")
+        self.assertIn("no valid detector", payload["verdict"])
 
 
 class TheVerdicts(unittest.TestCase):

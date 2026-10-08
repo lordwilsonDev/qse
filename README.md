@@ -123,9 +123,9 @@ friendlier metric. The naive arm takes the top fit correlate and fits its best
 single threshold; the engineered arm is the rule QSE built and verified:
 
 ```text
-    arm          rule                          fit J  holdout J  flagged
-    naive        staff_on_shift <= 6.0          +0.826     -0.028      132
-    engineered   handoffs >= 24.0  (unvalidated) +0.000    +0.000        0
+    arm          rule                       fit J  holdout J  flagged
+    naive        staff_on_shift <= 6.0       +0.826     -0.028      132
+    engineered   (no detector)                 n/a        n/a        -
 
   engineered arm wins: False
 ```
@@ -134,20 +134,18 @@ Two honest readings, both unflattering and both the point:
 
 - The **naive arm collapses** exactly as the fallible-analyst story predicts
   (`+0.826` in-sample, negative out of sample). The fixture punishes it.
-- The **engineered arm is scored but not credited**: the rule it built is a
-  conservative default chosen *by construction*, not by measurement
-  (`validated: False`), and it flags nothing. `compare` refuses to credit an
-  unvalidated rule even when its separation looks high, because a rule that wins
-  by luck is not evidence that engineered questioning created the capability. So
-  the moonshot's terminal claim still does **not** hold. `compare` exits `1` --
-  the honest verdict, not a bug.
+- The **engineered arm emits no detector at all**: with nothing measured, the
+  builder refuses to invent a field and produces an explicit *detector-less*
+  artifact (`validated: False`, flags nothing). `compare` cannot score it and does
+  not credit it, so the moonshot's terminal claim still does **not** hold.
+  `compare` exits `1` -- the honest verdict, not a bug.
 
-Running the comparison exposed a real defect and compiled it into a reusable
-control: the generator's fallback had selected the *outcome* as the rule's field
-(`failed >= 24`), a rule that reads the very thing it predicts. A decision rule can
-no longer sit on the outcome, and `compare` no longer credits an unvalidated rule.
-The failure, the inversion and the control are recorded in
-[docs/D1-failure-to-leverage.md](docs/D1-failure-to-leverage.md).
+Running the comparison exposed a real defect and compiled it into reusable
+controls: the generator's fallback first selected the *outcome* as the rule's field
+(`failed >= 24`), then an arbitrary input. A rule can no longer sit on the outcome,
+and with nothing measured the engine emits an explicit "no usable detector"
+artifact rather than an arbitrary one. The failure, the inversion and the controls
+are recorded in [docs/D1-failure-to-leverage.md](docs/D1-failure-to-leverage.md).
 
 ## The close-out
 
