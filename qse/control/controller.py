@@ -108,11 +108,18 @@ class Engine:
         builder: str = DEFAULT_BUILDER,
         verifier: str = DEFAULT_VERIFIER,
         max_revisions: int = MAX_REVISIONS,
+        builder_identity: str = "",
+        verifier_identity: str = "",
     ) -> None:
         self.ledger = Path(ledger)
         self.builder = builder
         self.verifier = verifier
         self.max_revisions = max_revisions
+        # Attested identities (a session id, a runner identity). Empty means "not
+        # attested", which is not the same as "equal"; independence is then only as
+        # strong as the names are, and the close-out says so.
+        self.builder_identity = builder_identity
+        self.verifier_identity = verifier_identity
 
     # ------------------------------------------------------------------ #
     # Ledger
@@ -527,6 +534,8 @@ class Engine:
             reproductions=reproductions,
             evidence_for=evidence_for,
             evidence_against=evidence_against,
+            builder_identity=self.builder_identity,
+            verifier_identity=self.verifier_identity,
         )
         verification = outcome.get("verification")
         if verification is not None:

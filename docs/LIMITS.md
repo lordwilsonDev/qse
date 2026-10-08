@@ -116,13 +116,21 @@ idea, recorded as such so the two cannot be confused.
 else 1). It is a label with a decimal point. It is documented as ordinal in the
 module and in the returned dict.
 
-## Self-verification is caught by name only
+## Verifier independence is by name, and now also by attested identity
 
-`R-VER-1` refuses when the verifier's name equals the builder's name, case-folded
-and stripped. Two different strings can still be one person, one model in two
-sessions, or a client and its own alias. Telling those apart needs something the
-string cannot carry — a session id, a runner identity, a signed attestation.
-v0.1 does not have that, and does not claim to.
+`R-VER-1` refuses when the verifier's name equals the builder's name (case-folded and
+stripped). Two different strings can still be one person, one model in two sessions,
+or a client and its own alias, so QSE now also accepts **attested identities**: pass
+`--builder-identity` and `--verifier-identity` (a session id, a runner identity) and a
+shared identity is refused even when the names differ, while differing identities
+establish independence by *identity* rather than by name.
+
+The limit that remains: the attestation is caller-supplied. QSE records it and reads
+`independence_basis == "names and identities differ"` into the close-out, so `Q10`
+becomes `SUPPORTED` -- but QSE does not itself prove the two ran as separate
+processes or institutions. Where no identity is attested, `Q10` still answers
+`UNKNOWN`, because a name is not a path. And `SUCCESS` stays unreachable for a
+second, unrelated reason: no real-world outcome with a measured delta exists.
 
 ## The hash chain cannot vouch for the last line
 
@@ -152,6 +160,25 @@ rather than passing vacuously, because "it replays" is a claim about a run and
 there was no run. The reverse case is not caught: a ledger with exactly one
 trivial question would satisfy A17 without demonstrating anything. The list
 checks for the presence of a process, not for the process being hard.
+
+## A ledger holds a history, not a run -- so an id repeated across runs is merged
+
+The ledger is append-only and the CLI takes a caller-supplied path, so one file can
+hold several runs (`selftest` appends to whatever it is given; `CLAIMS.md` C-002 and
+C-004 share `/tmp/qse-claims.jsonl`). `State`'s dict buckets are **indexes**, so an
+id two runs emit again -- deterministic ids recur exactly -- lands as one entry.
+`records` keeps every event; the buckets collapse repeats.
+
+`A16` therefore checks **containment** (every id an event names is present in the
+state, plus no unknown event types and no rebuild errors), not equality of counts.
+An equality would fail on any healthy ledger holding more than one run, which is
+exactly the false alarm that `verify-claims --run` surfaced on C-002
+(`qse-d1-0002` in [D1-failure-to-leverage.md](D1-failure-to-leverage.md)).
+
+The limit that remains: a ledger carries no run/session id, so an id repeated
+**within a single run** (a genuine id-collision bug) is indistinguishable from the
+same id emitted by a second run. Telling them apart needs a run id, which is the
+next question recorded in the D1 entry, not a control shipped here.
 
 ## The fixture can now carry the moonshot's terminal test -- but it has not been scored
 

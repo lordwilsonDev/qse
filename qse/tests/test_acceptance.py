@@ -199,6 +199,32 @@ class Auditability(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.ws.close()
 
+    def test_replaying_the_same_run_twice_names_no_id_the_state_lacks(self):
+        # Regression for the defect C-002's `selftest --ledger <file>` surfaced:
+        # a second run appended to one ledger repeats every id, and the old A16
+        # compared distinct hypotheses to hypothesis *events*, so a healthy
+        # two-run ledger failed "entire process replayable". Containment holds.
+        twice = self.records + self.records
+        state = State.replay(twice)
+        self.assertEqual(state.unknown, 0)
+        self.assertEqual(state.errors, [])
+        self.assertEqual(state.unreplayed_ids(twice), [])
+
+    def test_an_id_an_event_names_but_the_state_lacks_is_reported(self):
+        state = State.replay([])
+        self.assertEqual(state.unreplayed_ids([{"ev": "hypothesis", "hid": "HYP-absent"}]),
+                         ["hypothesis:HYP-absent"])
+        self.assertEqual(state.unreplayed_ids([{"ev": "question", "qid": "Q-absent"}]),
+                         ["question:Q-absent"])
+        # an event that names no id is not a missing id, and an unknown type is
+        # counted by `unknown`, not reported here
+        self.assertEqual(state.unreplayed_ids([{"ev": "hypothesis"}, {"ev": "future"}]), [])
+
+    def test_a_record_the_fold_cannot_rebuild_fails_the_replay_check(self):
+        broken = self.records + [{"ev": "hypothesis"}]  # no hid: the fold raises
+        rows = {r["id"]: r for r in cli.acceptance(broken)}
+        self.assertFalse(rows["A16"]["ok"])
+
     def test_the_state_rebuilds_from_the_ledger_alone(self):
         state = State.replay(self.records)
         self.assertEqual(state.unknown, 0)
@@ -366,6 +392,16 @@ class TheCliVerdicts(unittest.TestCase):
 
     def test_replay_rebuilds_without_losing_an_event(self):
         self.assertEqual(self._run_cli(["replay", "--ledger", self.ledger]), 0)
+
+    def test_a_second_identical_selftest_on_one_ledger_still_passes(self):
+        # The shipped `selftest --ledger <file>` appends to the file it is given,
+        # and CLAIMS.md C-002 invokes it against a fixed path. Running it twice
+        # used to fail A16 ("entire process replayable") on a healthy ledger, a
+        # defect the claims verifier surfaced. Both runs must still pass.
+        ledger = self.ws.ledger("selftest-twice.jsonl")
+        self.assertEqual(self._run_cli(["selftest", "--ledger", ledger]), 0)
+        self.assertEqual(self._run_cli(["selftest", "--ledger", ledger]), 0)
+        self.assertEqual(self._run_cli(["checks", "--ledger", ledger]), 0)
 
     def test_receipt_renders_one_line_per_event(self):
         self.assertEqual(self._run_cli(["receipt", "--ledger", self.ledger]), 0)

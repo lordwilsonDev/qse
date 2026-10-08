@@ -277,5 +277,46 @@ class TheEmptyLedger(unittest.TestCase):
             closeout_mod.closeout(str(bad))
 
 
+class IndependenceByIdentity(TheClockIsPinned):
+    """Attested identities can establish independence; names alone cannot."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.ledger = cls.ws.ledger("ident.jsonl")
+        frames = [dataset(cls.payload), dataset(scenario_payload("orders_holdout.json"))]
+        Engine(cls.ledger, builder_identity="session:A", verifier_identity="session:B").run(
+            cls.payload["question"], answers=cls.payload["facts"], datasets=frames,
+            rows=cls.payload["rows"], authority="VP of Operations")
+        cls.out = closeout_mod.closeout(cls.ledger)
+
+    def test_names_alone_leave_independence_unknown(self):
+        default = closeout_mod.closeout(self._run("names.jsonl"))
+        q10 = next(r for r in default["answers"] if r["id"] == "Q10")
+        self.assertEqual(q10["label"], "UNKNOWN")
+
+    def test_attested_distinct_identities_establish_independence(self):
+        q10 = next(r for r in self.out["answers"] if r["id"] == "Q10")
+        self.assertEqual(q10["label"], "SUPPORTED")
+        self.assertIn("attested identity", q10["answer"])
+
+    def test_success_is_still_not_reached_for_want_of_a_real_outcome(self):
+        # independence is now established, but SUCCESS also needs a real-world
+        # outcome with a measured delta -- which this run does not have
+        conditions = self.out["terminal"]["conditions"]
+        self.assertFalse(conditions["SUCCESS"]["holds"])
+        self.assertIn("real-world outcome", conditions["SUCCESS"]["why"])
+
+    def test_a_shared_identity_is_refused_and_recorded(self):
+        ledger = self.ws.ledger("shared.jsonl")
+        frames = [dataset(self.payload), dataset(scenario_payload("orders_holdout.json"))]
+        Engine(ledger, builder_identity="session:A", verifier_identity="session:A").run(
+            self.payload["question"], answers=self.payload["facts"], datasets=frames,
+            rows=self.payload["rows"], authority="VP of Operations")
+        refused = [r for r in chain.load(ledger) if r.get("kind") == "VERIFICATION_REFUSED"]
+        self.assertTrue(refused)
+        self.assertIn("R-VER-1", refused[0]["why"])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

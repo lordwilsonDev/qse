@@ -15,7 +15,9 @@ from ..core.artifact import make_artifact
 from ..core.hypothesis import make_hypothesis
 from ..experiment import results as result_mod
 from ..ids import iso, utcnow
+from ..control import policy
 from ..verification import adversary, evidence as evidence_mod, provenance, reproducibility
+from ..verification import verifier as verifier_mod
 from ..verification.verifier import explain, gate
 from .support import pin_clock, rows_of, strong_evidence
 
@@ -352,6 +354,53 @@ class TheGateAndTheRealAdversary(unittest.TestCase):
                        reproductions=[], evidence_for=both)
         self.assertFalse(outcome["ok"])
         self.assertIn("R-VER-3", outcome["refusals"])
+
+
+class IndependenceIsAPathNotAName(unittest.TestCase):
+    """A name is not an independent path; an attested identity can be."""
+
+    def test_differing_names_with_no_identity_are_independent_but_say_so(self):
+        ok, basis = verifier_mod.independence("builder", "verifier")
+        self.assertTrue(ok)
+        self.assertIn("not attested", basis)
+
+    def test_differing_identities_establish_independence(self):
+        ok, basis = verifier_mod.independence("builder", "verifier",
+                                              builder_identity="session:A",
+                                              verifier_identity="session:B")
+        self.assertTrue(ok)
+        self.assertEqual(basis, "names and identities differ")
+
+    def test_a_shared_identity_is_not_a_separate_path_even_with_two_names(self):
+        ok, basis = verifier_mod.independence("builder", "verifier",
+                                              builder_identity="session:A",
+                                              verifier_identity="session:A")
+        self.assertFalse(ok)
+        self.assertIn("identities are equal", basis)
+
+    def test_r_ver_1_refuses_a_shared_identity(self):
+        with self.assertRaises(policy.Refusal) as ctx:
+            policy.require_independent("builder", "verifier", "session:A", "session:A")
+        self.assertEqual(ctx.exception.rule, "R-VER-1")
+
+    def test_the_gate_records_the_basis_and_refuses_a_shared_identity(self):
+        art = artifact()
+        art.attacks = ["ATK-1"]
+        rep = reproduction()
+        evidence_for = [strong_evidence("HYP-1", source="orders.csv"),
+                        strong_evidence("HYP-1", source="holdout.csv")]
+        attack = [{"atid": "ATK-1", "kind": "SCOPE", "severity": "MINOR",
+                   "landed": False, "claim": "the rule may not generalise"}]
+        shared = gate(art, verifier="someone-else", attacks=attack,
+                      reproductions=[rep], evidence_for=evidence_for,
+                      builder_identity="session:A", verifier_identity="session:A")
+        self.assertIn("R-VER-1", shared["refusals"])
+        self.assertFalse(shared["ok"])
+        attested = gate(artifact(title="escalate v2"), verifier="someone-else",
+                        attacks=attack, reproductions=[rep],
+                        evidence_for=evidence_for,
+                        builder_identity="session:A", verifier_identity="session:B")
+        self.assertEqual(attested["independence_basis"], "names and identities differ")
 
 
 if __name__ == "__main__":  # pragma: no cover

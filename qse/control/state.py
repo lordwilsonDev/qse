@@ -148,6 +148,42 @@ class State:
         """qid -> the slots still unfilled in that question's latest version."""
         return {qid: q.unresolved() for qid, q in self.questions.items() if q.unresolved()}
 
+    def unreplayed_ids(self, records: Iterable[Mapping[str, Any]]) -> list[str]:
+        """Ids an event names that the fold did not land in its index.
+
+        The buckets are keyed by id, so an id that a second run emits again
+        collapses to its one entry. That is by design -- the buckets are indexes,
+        not the record of truth -- and it is why this checks *containment* (every
+        id an event names is present) rather than equality of counts. An equality
+        would falsely fail on any ledger holding more than one run, while this
+        fails only when an id a record names is genuinely absent from the state.
+        """
+        keyed = {
+            "question": ("qid", self.questions),
+            "assumption": ("aid", self.assumptions),
+            "hypothesis": ("hid", self.hypotheses),
+            "experiment": ("xid", self.experiments),
+            "evidence": ("eid", self.evidence),
+            "artifact": ("aid", self.artifacts),
+            "verification": ("vid", self.verifications),
+            "outcome": ("oid", self.outcomes),
+            "expert": ("operator", self.experts),
+        }
+        missing: list[str] = []
+        for rec in records:
+            if not isinstance(rec, Mapping):
+                continue
+            spec = keyed.get(rec.get("ev"))
+            if spec is None:
+                continue
+            field_name, bucket = spec
+            ident = rec.get(field_name)
+            if ident is None:
+                continue
+            if str(ident) not in bucket:
+                missing.append(f"{rec['ev']}:{ident}")
+        return missing
+
     # The dict buckets are indexes, not the record of truth: every event is also
     # in ``records``. These flatteners are how a caller reads a whole category
     # without caring how it was bucketed.

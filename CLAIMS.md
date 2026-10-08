@@ -22,3 +22,5 @@ a result until it is staged and mechanically checkable.
 | C-005 | A decision rule may never sit on the outcome it predicts; with nothing measured the artifact is detector-less | `qse/build/generator.py` | python3 -m unittest qse.tests.test_experiment_build | 0 | verified | 2026-10-08 |
 | C-006 | Verifier independence is NOT established on the default run: Q10 answers UNKNOWN because a name is not a path | `qse/closeout.py` | read q10_independence in qse/closeout.py and confirm it returns UNKNOWN when only the names differ | - | verified | 2026-10-08 |
 | C-007 | The whole test suite passes | - | python3 -m unittest discover -s qse/tests -t . | 0 | verified | 2026-10-08 |
+| C-008 | Verifier independence can be established by attested identity, and a shared identity is refused even when the names differ | `qse/verification/verifier.py` | python3 -m unittest qse.tests.test_verification | 0 | verified | 2026-10-08 |
+| C-009 | Replay is checked by containment, not by counting ids: a ledger holding the same run twice still passes A16 (the defect C-002 surfaced) | `qse/control/state.py` | python3 -m unittest qse.tests.test_acceptance | 0 | verified | 2026-10-08 |

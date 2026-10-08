@@ -182,10 +182,13 @@ The run ends in exactly one terminal condition -- `SUCCESS`, `FALSIFICATION`,
 **all of them are printed** alongside the precedence actually used, so no state is
 silently converted into another. Exit is `0` only on `SUCCESS`.
 
-It is deliberately hard to satisfy. `Q10` answers `UNKNOWN` on every run in this
-repository, because the only evidence for independence is that the verifier's
-*name* differs from the builder's, and a name is not an independent path. That
-single refusal is what keeps `SUCCESS` unreachable here.
+It is deliberately hard to satisfy. On the default run `Q10` answers `UNKNOWN`,
+because the only evidence for independence is that the verifier's *name* differs from
+the builder's, and a name is not an independent path. Pass `--builder-identity` and
+`--verifier-identity` (a session id, a runner identity) and independence is
+established by identity -- `Q10` becomes `SUPPORTED`, and a *shared* identity is
+refused even when the names differ. `SUCCESS` still stays unreachable for a second,
+unrelated reason: no real-world outcome with a measured delta exists here.
 
 ## Tests
 

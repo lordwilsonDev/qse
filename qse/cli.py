@@ -219,15 +219,22 @@ def acceptance(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not records:
         add("A16", False, "there are no events to replay", unknown=state.unknown, counts=expected)
     else:
+        # The check is containment, not counting. A ledger may hold more than one
+        # run (a second `selftest` appends to the same file), so an id emitted by
+        # both runs lands once in the index -- a count equality would call that a
+        # defect. What is a defect is an id a record names that the state does not
+        # have, or an event type / record the fold could not rebuild.
+        missing = state.unreplayed_ids(records)
         replayed_ok = (
             isinstance(state, State)
             and state.unknown == 0
             and not state.errors
-            and expected["hypothesis"] == sum(1 for r in records if r.get("ev") == "hypothesis")
+            and not missing
         )
         add("A16", replayed_ok,
             "the ledger replays into a state with no unknown event types and no rebuild errors",
-            unknown=state.unknown, errors=len(state.errors), counts=expected)
+            unknown=state.unknown, errors=len(state.errors),
+            unreplayed_ids=missing[:5], counts=expected)
 
     if not state.questions:
         add("A17", False, "no question was recorded, so there is no reason chain to reconstruct")
@@ -309,7 +316,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not question:
         raise Unusable("no question: pass --question or put a 'question' field in the scenario file")
     engine = Engine(args.ledger, builder=args.builder, verifier=args.verifier,
-                    max_revisions=args.max_revisions)
+                    max_revisions=args.max_revisions,
+                    builder_identity=getattr(args, "builder_identity", ""),
+                    verifier_identity=getattr(args, "verifier_identity", ""))
     report = engine.run(
         question,
         answers=facts,
@@ -634,6 +643,7 @@ def cmd_selftest(args: argparse.Namespace) -> int:
         holdout=holdout if Path(holdout).exists() else None, ledger=args.ledger,
         question=None, authority="VP of Operations", builder=DEFAULT_BUILDER,
         verifier=DEFAULT_VERIFIER, max_revisions=MAX_REVISIONS,
+        builder_identity="", verifier_identity="",
         real_world=False, before=None, after=None,
     ))
     check_code = cmd_checks(argparse.Namespace(json=args.json, ledger=args.ledger))
@@ -676,6 +686,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--authority", default="")
     run.add_argument("--builder", default=DEFAULT_BUILDER)
     run.add_argument("--verifier", default=DEFAULT_VERIFIER)
+    run.add_argument("--builder-identity", default="",
+                     help="attested identity for the builder (a session id, a runner identity)")
+    run.add_argument("--verifier-identity", default="",
+                     help="attested identity for the verifier; set both and independence is "
+                          "established by identity, not by name")
     run.add_argument("--max-revisions", type=int, default=MAX_REVISIONS)
     run.add_argument("--real-world", action="store_true", help="count the outcome as a real-world effect")
     run.add_argument("--before", type=float, default=None)

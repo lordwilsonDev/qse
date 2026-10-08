@@ -346,6 +346,25 @@ def q10_independence(state: State, records: Sequence[dict]) -> dict[str, Any]:
                     "No independent verification was performed. The artifact must not be "
                     "represented as independently verified.",
                     "UNKNOWN", [], "no verification event exists")
+    # Independence by *attested identity* is a stronger claim than differing names.
+    # Where the record carries it, Q10 stops answering UNKNOWN -- but only that far:
+    # QSE does not itself prove the two identities ran as separate processes.
+    attested = [v for v in verifications
+                if str(v.get("independence_basis", "")) == "names and identities differ"]
+    if attested:
+        pairs = sorted({(str(v.get("builder_identity")), str(v.get("verifier_identity")))
+                        for v in attested})
+        shown = "; ".join(f"builder {b!r} vs verifier {e!r}" for b, e in pairs)
+        return _row(
+            10, "Independence",
+            f"{len(verifications)} verification(s) recorded; {len(attested)} establish "
+            f"independence by **attested identity**, not by name alone: {shown}. The identities "
+            f"differ, so the verifier is a separate path as far as the record shows. The "
+            f"attestation is caller-supplied (a session id or runner identity); QSE records it "
+            f"and does not independently prove the two ran in separate processes or "
+            f"institutions -- it says that much and no more.",
+            "SUPPORTED", _ids_of(attested),
+            "independence_basis == 'names and identities differ' on the verification record")
     distinct = {str(v.get("verifier")) != str(v.get("builder")) for v in verifications}
     names = {(str(v.get("verifier")), str(v.get("builder"))) for v in verifications}
     methods = sorted({str(v.get("method")) for v in verifications})
@@ -552,7 +571,10 @@ def terminal(state: State, records: Sequence[dict]) -> dict[str, Any]:
     real = [o for o in outcomes if o.get("real_world") is True]
     measured = [o for o in outcomes if o.get("delta") not in (None, "", "None")]
     verifications = [v for v in _ev(records, "verification") if v.get("ok")]
-    independence_established = False  # names are all there is; see q10
+    independence_established = any(
+        str(v.get("independence_basis", "")) == "names and identities differ"
+        for v in _ev(records, "verification")
+    )
     refuted = [h for h in state.hypotheses.values()
                if str(h.get("status", "")).upper() == "REFUTED"]
     not_run = _decision(state, "EXPERIMENT_NOT_RUN")

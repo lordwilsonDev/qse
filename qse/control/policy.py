@@ -131,12 +131,26 @@ def forbid_majority_vote(tally: Mapping[str, int], total: int) -> None:
 # Verification
 # --------------------------------------------------------------------------- #
 
-def require_independent(builder: str, verifier: str) -> None:
-    """R-VER-1."""
+def require_independent(builder: str, verifier: str, builder_identity: str = "",
+                        verifier_identity: str = "") -> None:
+    """R-VER-1. The builder cannot verify its own artifact.
+
+    Names are compared folded, as before. When both sides attest an identity, a
+    shared identity is refused even though the names differ -- two names are not
+    two paths, and a session id the caller supplies closes that gap.
+    """
     if not str(verifier).strip():
         raise Refusal("R-VER-1", "verification needs a named verifier")
     if str(verifier).strip().lower() == str(builder).strip().lower():
         raise Refusal("R-VER-1", f"{builder!r} built this artifact and cannot verify it")
+    left = str(builder_identity or "").strip()
+    right = str(verifier_identity or "").strip()
+    if left and right and left == right:
+        raise Refusal(
+            "R-VER-1",
+            f"builder and verifier attest the same identity {left!r}, so the verifier is "
+            f"not a separate path even though the names differ",
+        )
 
 
 def require_attacked(artifact: Any) -> None:

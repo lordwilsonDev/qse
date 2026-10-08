@@ -47,6 +47,9 @@ class Verification:
     method: str
     evidence: tuple[str, ...] = field(default_factory=tuple)
     notes: str = ""
+    builder_identity: str = ""
+    verifier_identity: str = ""
+    independence_basis: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
@@ -65,20 +68,53 @@ class Verification:
             method=str(payload.get("method", "")),
             evidence=tuple(str(e) for e in payload.get("evidence", ())),
             notes=str(payload.get("notes", "")),
+            # Older records predate identity; absent means "not attested", not "equal".
+            builder_identity=str(payload.get("builder_identity", "")),
+            verifier_identity=str(payload.get("verifier_identity", "")),
+            independence_basis=str(payload.get("independence_basis", "")),
         )
 
 
 def is_independent(builder: str, verifier: str) -> bool:
-    """Whether the verifier is somebody other than the builder.
+    """Whether the verifier is somebody other than the builder, by name.
 
     Compared by folded name, which is exactly as strong as the names are. Two
     strings that differ can still be one person, and two spellings that agree
-    after folding are treated as one. Where the identity must be stronger than a
-    string, QSE cannot supply it and says so rather than implying otherwise.
+    after folding are treated as one. ``independence`` is the stronger check when
+    identities are attested; this keeps the name-only rule for callers that have
+    nothing more.
     """
     if not str(verifier or "").strip():
         return False
     return canon(verifier) != canon(builder)
+
+
+def independence(
+    builder: str,
+    verifier: str,
+    *,
+    builder_identity: str = "",
+    verifier_identity: str = "",
+) -> tuple[bool, str]:
+    """Whether the verifier is an independent path, and the basis for saying so.
+
+    Names alone are weak: two names can be one person, one model in two sessions,
+    or a client and its alias. When both sides *attest* an identity -- a session
+    id, a runner identity, a signed attestation -- independence is established only
+    if those identities differ, and a shared identity is refused even when the
+    names differ. When no identity is attested, the verdict says so rather than
+    implying the name is a path.
+    """
+    if not str(verifier or "").strip():
+        return False, "no verifier named"
+    if canon(verifier) == canon(builder):
+        return False, "names are equal"
+    bi, vi = str(builder_identity or "").strip(), str(verifier_identity or "").strip()
+    if bi and vi:
+        if bi == vi:
+            return False, "names differ but identities are equal"
+        return True, "names and identities differ"
+    return True, "names differ; identities not attested"
 
 
 def _evidence(raw: Iterable[Any]) -> list[Evidence]:
@@ -104,6 +140,8 @@ def verify(
     evidence_against: Iterable[Any] = (),
     method: str = "independent replay",
     notes: str = "",
+    builder_identity: str = "",
+    verifier_identity: str = "",
 ) -> Verification:
     """Build the Verification record.
 
@@ -112,7 +150,10 @@ def verify(
     surviving artifact, so a record built by hand still cannot claim a pass for
     a non-independent verifier.
     """
-    independent = is_independent(artifact.builder, verifier)
+    independent, basis = independence(
+        artifact.builder, verifier,
+        builder_identity=builder_identity, verifier_identity=verifier_identity,
+    )
     rows = list(attacks or ())
     return Verification(
         vid=new_id("VER", artifact.aid, verifier, method),
@@ -124,6 +165,9 @@ def verify(
         method=method,
         evidence=tuple(e.eid for e in _evidence(evidence_for)),
         notes=notes,
+        builder_identity=str(builder_identity or ""),
+        verifier_identity=str(verifier_identity or ""),
+        independence_basis=basis,
     )
 
 
@@ -136,6 +180,8 @@ def gate(
     evidence_for: Iterable[Any] = (),
     evidence_against: Iterable[Any] = (),
     method: str = "independent replay",
+    builder_identity: str = "",
+    verifier_identity: str = "",
 ) -> dict[str, Any]:
     """Decide whether the artifact may be marked VERIFIED. Never raises a Refusal.
 
@@ -164,7 +210,8 @@ def gate(
 
     # `&` rather than `and`: every rule is evaluated and every reason recorded, so
     # a report names all the problems at once instead of only the first.
-    passed &= guard(require_independent, artifact.builder, verifier)
+    passed &= guard(require_independent, artifact.builder, verifier,
+                    builder_identity, verifier_identity)
     passed &= guard(require_attacked, artifact)
     passed &= guard(require_reproduced, repros)
 
@@ -196,6 +243,10 @@ def gate(
             + "; ".join(unusable)
         )
 
+    independent, basis = independence(
+        artifact.builder, verifier,
+        builder_identity=builder_identity, verifier_identity=verifier_identity,
+    )
     verification = None
     if passed:
         verification = verify(
@@ -206,6 +257,8 @@ def gate(
             evidence_for=usable_for,
             evidence_against=against_ev,
             method=method,
+            builder_identity=builder_identity,
+            verifier_identity=verifier_identity,
         )
 
     return {
@@ -213,7 +266,8 @@ def gate(
         "artifact": artifact.aid,
         "verifier": str(verifier),
         "builder": artifact.builder,
-        "independent": is_independent(artifact.builder, verifier),
+        "independent": independent,
+        "independence_basis": basis,
         "refusals": refusals,
         "reasons": reasons,
         "verification": verification,
