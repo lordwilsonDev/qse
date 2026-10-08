@@ -207,6 +207,17 @@ class TheRulePrimitives(unittest.TestCase):
         self.assertFalse(out["scored"])
         self.assertIn("numeric threshold", out["reason"])
 
+    def test_score_rule_scores_at_the_rules_own_threshold_not_the_best_one(self):
+        rows = [{"x": 1, "y": 1}, {"x": 2, "y": 1}, {"x": 3, "y": 0}, {"x": 4, "y": 0}]
+        # x >= 5 flags nothing, so it separates nothing -- even though x *can* separate y
+        nothing = baseline_mod.score_rule({"field": "x", "op": ">=", "threshold": 5.0},
+                                           rows, outcome="y")
+        self.assertTrue(nothing["scored"])
+        self.assertEqual(nothing["flagged"], 0)
+        self.assertEqual(nothing["youden"], 0.0)
+        best = baseline_mod.best_threshold_rule(rows, "x", outcome="y")
+        self.assertGreater(baseline_mod.score_rule(best, rows, outcome="y")["youden"], 0.0)
+
     def test_scoring_a_rule_is_deterministic(self):
         fit, hold = spurious_fixture()
         rule = baseline_mod.best_threshold_rule(fit, "m", outcome="y")
@@ -238,6 +249,24 @@ class TheArmComparison(unittest.TestCase):
         scenario = (EXAMPLES / "orders_scenario.json").as_posix()
         self.assertEqual(self._cli(["compare", "--scenario", scenario,
                                     "--holdout", scenario, "--driver", "handoffs"]), 1)
+
+    def test_an_unvalidated_engineered_rule_is_reported_and_not_credited(self):
+        import json
+
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            cli.main(["--json", "compare",
+                      "--scenario", (EXAMPLES / "orders_scenario.json").as_posix(),
+                      "--holdout", (EXAMPLES / "orders_holdout.json").as_posix(),
+                      "--driver", "handoffs"])
+        payload = json.loads(out.getvalue())
+        out.close()
+        err.close()
+        engineered = next(a for a in payload["arms"] if a["arm"] == "engineered")
+        self.assertFalse(engineered["validated"])
+        self.assertFalse(payload["engineered_wins"],
+                         "an unvalidated rule must not be credited even if it scores")
+        self.assertIn("unvalidated", payload["verdict"])
 
 
 class TheVerdicts(unittest.TestCase):

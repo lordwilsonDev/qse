@@ -15,7 +15,8 @@ from ..core.evidence import Evidence
 from ..core.hypothesis import Hypothesis
 from ..ids import new_id
 
-__all__ = ["BuildSpec", "from_hypothesis", "acceptance_for"]
+__all__ = ["BuildSpec", "from_hypothesis", "acceptance_for", "measured_columns",
+           "outcome_columns"]
 
 
 @dataclass
@@ -83,10 +84,33 @@ def measured_columns(evidence: tuple[Evidence, ...] | list[Evidence] | tuple = (
         observed = getattr(item, "observed", None)
         if not isinstance(observed, dict):
             continue
-        for key in ("field", "precursor", "value", "x", "y", "group", "time", "outcome", "column"):
+        for key in ("field", "precursor", "value", "x", "y", "group", "time", "column"):
             value = observed.get(key)
             if isinstance(value, str) and value and value not in found:
                 found.append(value)
+    return tuple(found)
+
+
+def outcome_columns(evidence: tuple[Evidence, ...] | list[Evidence] | tuple = ()) -> tuple[str, ...]:
+    """The columns the evidence names as the outcome being explained.
+
+    A rule whose threshold is applied to the outcome it predicts is circular, and
+    scoring it would be circular too. The runners already report which column is
+    the outcome (``outcome`` on some observations, ``excluded_circular`` on the
+    discrimination scan), so it is read back rather than guessed at, and it is
+    never treated as an artifact input or as a detector field.
+    """
+    found: list[str] = []
+    for item in evidence:
+        observed = getattr(item, "observed", None)
+        if not isinstance(observed, dict):
+            continue
+        outcome = observed.get("outcome")
+        if isinstance(outcome, str) and outcome and outcome not in found:
+            found.append(outcome)
+        for column in observed.get("excluded_circular") or ():
+            if isinstance(column, str) and column and column not in found:
+                found.append(column)
     return tuple(found)
 
 
@@ -98,7 +122,11 @@ def from_hypothesis(
     columns: tuple[str, ...] | list[str] = (),
 ) -> BuildSpec:
     """A specification derived from the hypothesis, not from a template."""
-    inputs = measured_columns(evidence) or tuple(str(c) for c in columns)
+    raw_inputs = measured_columns(evidence) or tuple(str(c) for c in columns)
+    # The outcome is what the artifact is judged against, never an input it reads to
+    # decide. Dropping it here is what keeps a generated rule from sitting on it.
+    outcomes = set(outcome_columns(evidence))
+    inputs = tuple(i for i in raw_inputs if i not in outcomes) or raw_inputs
     title = f"{hypothesis.mechanism.title()} rule for {hypothesis.locus.lower()} bottleneck detection"
     sections = (
         f"claim: {hypothesis.text}",

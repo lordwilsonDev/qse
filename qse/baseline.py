@@ -212,6 +212,9 @@ def best_threshold_rule(
             "threshold": round(real, 4),
             "youden": round(j, 4),
             "n": n,
+            # fit on the fitting sample, so it is a measured rule in QSE's sense --
+            # which is exactly why the comparison scores it rather than excusing it
+            "validated": True,
         }
         if best is None or candidate["youden"] > best["youden"]:
             best = candidate
@@ -245,20 +248,34 @@ def score_rule(
         return {"scored": False, "names_the_outcome": True, "field": field, "op": op,
                 "reason": (f"the rule flags on {outcome!r}, the outcome it would be scored "
                            "against -- circular, so it is not scored")}
-    sign = -1.0 if op == "<=" else 1.0  # _youden scans >=, so invert the values to score <=
     pairs = _outcome_pairs(rows, field, outcome)
-    j, _, sens, spec, n = _youden([(sign * v, f) for v, f in pairs])
-    flagged = sum(1 for v, _ in pairs if (v <= threshold if op == "<=" else v >= threshold))
+    if not pairs:
+        return {"scored": False, "reason": f"no numeric pairs of {field!r} and {outcome!r}",
+                "field": field, "op": op}
+    positives = sum(1 for _, f in pairs if f == 1)
+    negatives = len(pairs) - positives
+    if not positives or not negatives:
+        return {"scored": False, "reason": f"{outcome!r} has only one class in these rows",
+                "field": field, "op": op}
+    # Score the rule AT ITS OWN threshold. Taking the best threshold instead would
+    # report the field's potential rather than the rule's behaviour -- a rule that
+    # flags nothing would look excellent.
+    flagged_flags = [f for v, f in pairs if (v <= threshold if op == "<=" else v >= threshold)]
+    flagged = len(flagged_flags)
+    true_positives = sum(flagged_flags)
+    false_positives = flagged - true_positives
+    sensitivity = true_positives / positives
+    specificity = (negatives - false_positives) / negatives
     return {
         "scored": True,
         "field": field,
         "op": op,
         "threshold": threshold,
-        "youden": round(j, 4),
-        "sensitivity": round(sens, 4),
-        "specificity": round(spec, 4),
+        "youden": round(sensitivity + specificity - 1.0, 4),
+        "sensitivity": round(sensitivity, 4),
+        "specificity": round(specificity, 4),
         "flagged": flagged,
-        "n": n,
+        "n": len(pairs),
     }
 
 

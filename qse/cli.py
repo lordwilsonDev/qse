@@ -522,20 +522,29 @@ def cmd_compare(args: argparse.Namespace) -> int:
     eng_rule = (built or {}).get("rule") or {}
 
     def row(name: str, rule: Mapping[str, Any]) -> dict[str, Any]:
-        return {"arm": name, "fit": baseline_mod.score_rule(rule, fit, outcome=args.outcome),
+        return {"arm": name, "validated": bool(rule.get("validated")),
+                "fit": baseline_mod.score_rule(rule, fit, outcome=args.outcome),
                 "holdout": baseline_mod.score_rule(rule, hold, outcome=args.outcome)}
 
     arms = [row("naive", naive_rule), row("engineered", eng_rule)]
     margin = runner_mod.DISCRIMINATION_MARGIN_FLOOR
     n_score, e_score = arms[0]["holdout"], arms[1]["holdout"]
+    eng_validated = arms[1]["validated"]
+    # An unvalidated rule (chosen by construction, not by measurement) is never
+    # credited even if its separation looks high: a rule that wins by luck is not
+    # evidence that engineered questioning created the capability.
     engineered_wins = bool(
-        n_score.get("scored") and e_score.get("scored")
+        eng_validated and n_score.get("scored") and e_score.get("scored")
         and e_score["youden"] > n_score["youden"] + margin
     )
     if not e_score.get("scored"):
         verdict = (f"the engineered arm cannot be scored: {e_score.get('reason')}. "
                    "The comparison is runnable, but the engine produced no valid detector to "
                    "score against the naive arm.")
+    elif not eng_validated:
+        verdict = ("the engineered rule is unvalidated -- it was chosen by construction, not by "
+                   "measurement -- so it is not credited even though it can be scored. The "
+                   "engine has not earned the terminal claim here.")
     elif engineered_wins:
         verdict = (f"the engineered arm separates the holdout better by more than the "
                    f"{margin} margin, so the moonshot's terminal claim holds on this fixture")
@@ -551,7 +560,8 @@ def cmd_compare(args: argparse.Namespace) -> int:
                  if rule else "(no rule built)")
         fj = arm["fit"].get("youden")
         hj = arm["holdout"].get("youden")
-        lines.append(f"    {arm['arm']:<12} {fdesc:<34} "
+        mark = "" if arm["validated"] else "  (unvalidated)"
+        lines.append(f"    {arm['arm']:<12} {fdesc + mark:<34} "
                      f"{('n/a' if fj is None else format(fj, '+.3f')):>7} "
                      f"{('n/a' if hj is None else format(hj, '+.3f')):>10} "
                      f"{str(arm['holdout'].get('flagged', '-')):>8}")

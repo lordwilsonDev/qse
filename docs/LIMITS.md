@@ -180,17 +180,23 @@ same statistic -- Youden's J of the rule's flagged set against the outcome -- on
 holdout:
 
 ```text
-arm          rule                      fit J  holdout J  flagged
-naive        staff_on_shift <= 6.0      +0.826     +0.000      132
-engineered   failed >= 24.0               n/a        n/a        -
+arm          rule                          fit J  holdout J  flagged
+naive        staff_on_shift <= 6.0          +0.826     -0.028      132
+engineered   handoffs >= 24.0  (unvalidated) +0.000    +0.000        0
 ```
 
-The naive arm collapses (`+0.826` in-sample, `+0.000` out of sample), which is the
-fixture working as intended. But the engineered arm **cannot be scored at all**: the
-rule QSE built is a conservative default that flags on the outcome itself
-(`failed >= 24`), which is circular and is reported as such rather than scored. So
-the moonshot's terminal claim still does **not** hold -- not because the naive arm
-won, but because the engineered arm produced no valid detector. `compare` exits `1`.
+The naive arm collapses (`+0.826` in-sample, negative out of sample), which is the
+fixture working as intended. The engineered arm is scored but **not credited**: the
+rule QSE built is a conservative default chosen by construction, not by measurement
+(`validated: False`), and it flags nothing. `compare` refuses to credit an
+unvalidated rule even when its separation looks high. So the moonshot's terminal
+claim still does **not** hold. `compare` exits `1`.
+
+The first version of `compare` reported the engineered rule as *circular* (its field
+was `failed`, the outcome). That was a real defect in the generator's fallback, now
+fixed: the outcome is excluded from a rule's field and from the artifact's inputs,
+and an unvalidated rule is never credited. The control is recorded in
+[D1-failure-to-leverage.md](D1-failure-to-leverage.md).
 
 An earlier version of this file recorded the opposite result -- that the shipped
 pair was `SEPARABLE: False`, because the decoys held out of sample as strongly as
@@ -199,9 +205,9 @@ the driver and `precursor_h` was a *deterministic* function of `handoffs`
 removes the period-specific confounds, not by changing the audit.
 
 **And on the current code the engine still does not land on a mechanism.** The
-comparison above makes this concrete: the engine's verified artifact flags on the
-outcome, so it is not a detector and cannot win the control-arm comparison. Its
-discriminating experiment returns `INCONCLUSIVE (supported=None, refuted=False)`
+comparison above makes this concrete: the engine's verified artifact is a
+conservative default (`validated: False`) that flags nothing, so it cannot win the
+control-arm comparison. Its discriminating experiment returns `INCONCLUSIVE (supported=None, refuted=False)`
 on both datasets; the explanation it selects is a measurement objection
 (`MEASUREMENT`/`TELEMETRY` -- "the data is insufficient to support ..."); and the
 artifact it produces is a conservative default, whose own stated basis is that no

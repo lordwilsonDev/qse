@@ -298,6 +298,24 @@ class SpecificationAndGeneration(unittest.TestCase):
         self.assertFalse(rule["validated"])
         self.assertIn("unvalidated", rule["basis"])
 
+    def test_a_generated_rule_never_sits_on_the_outcome_it_predicts(self):
+        # the D1 control: a decision rule may not read the outcome it is judged
+        # against, and the outcome is not an input the artifact gets to read
+        from ..core.evidence import make_evidence
+
+        naming = make_evidence(
+            "candidate explanations were ranked against the outcome",
+            hypothesis=self.h.hid, kind="MEASURED", source="orders.csv",
+            method="discrimination scan", collected_at="2026-10-07T12:00:00Z",
+            observed={"excluded_circular": ["failed"], "outcome": "failed", "ranking": []},
+        )
+        spec = specification.from_hypothesis(self.h, [naming], columns=("failed", "handoffs"))
+        self.assertNotIn("failed", spec.inputs, "the outcome is not an input the artifact reads")
+        rule = generator.default_rule(spec, [naming])
+        self.assertNotEqual(rule["field"], "failed", "a rule may not read the outcome to predict it")
+        self.assertFalse(rule["validated"], "a fallback chosen by construction is not measured")
+        self.assertIn("by construction", rule["basis"])
+
     def test_the_generated_module_is_valid_python(self):
         spec = specification.from_hypothesis(self.h, self.evidence)
         source = generator.render(spec, rule=generator.default_rule(spec, self.evidence))
