@@ -162,8 +162,8 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
     """Run the witness for real, then on injected histories the machine cannot stage."""
     real = str(directory / "witness.jsonl")
     interval = 1.0
-    for _ in range(4):
-        continuity.beat(real, interval=interval,
+    for tick in range(4):
+        continuity.beat(real, interval=interval, progress=float(tick),
                         watches={"disk_free_gb": round(shutil.disk_usage("/").free / 1073741824, 1),
                                  "load1": round(os.getloadavg()[0], 2)})
         time.sleep(0.05)
@@ -243,6 +243,21 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
     policy_effects = {p: continuity.resolve_subject("SUBJECT_VOUCH_CONFLICT", p)[0]
                       for p in continuity.POLICIES}
 
+    # Liveness is not progress: the same shape twice, a flat counter and an advancing one.
+    # Only the flat ledger -- subject alive, beats on time -- is a stall.
+    def _progress_ledger(name: str, values: list[float]) -> str:
+        path = str(directory / name)
+        job = {"name": "job", "pid": 10, "started": "t0"}
+        for i, value in enumerate(values):
+            continuity.beat(path, wall=1_000.0 + i * 60.0, mono=i * 60.0, boot=500.0,
+                            pid=1, interval=60.0, subject=job, progress=value)
+        return path
+
+    stalled = continuity.verify(_progress_ledger("stalled.jsonl", [5, 5, 5, 5]),
+                                sleeps=[], stall_after=3)
+    advancing = continuity.verify(_progress_ledger("advancing.jsonl", [1, 2, 3, 4]),
+                                  sleeps=[], stall_after=3)
+
     return {
         "real": {"ledger": real, "verdict": report["verdict"], "beats": report["beats"],
                  "chain_ok": report["chain_ok"], "counts": report["counts"],
@@ -258,6 +273,10 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
                    "default_verdict": policy_default["verdict"],
                    "reattributed_verdict": policy_report["verdict"],
                    "vouch_conflict_break": policy_effects},
+        "progress": {"stalled_verdict": stalled["verdict"],
+                     "stalled_beats": stalled["longest_flat"],
+                     "advancing_verdict": advancing["verdict"],
+                     "stall_after": stalled["stall_after"]},
         "absences": continuity.absences(real),
         "power_sleeps_recorded": len(power.load()),
     }
@@ -282,7 +301,9 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
           and demo["policy"]["default_verdict"] == "CONTINUOUS"
           and demo["policy"]["reattributed_verdict"] == "SUBJECT_BROKE"
           and demo["policy"]["vouch_conflict_break"] == {"report": True, "probe": True,
-                                                          "token": False, "both": True})
+                                                          "token": False, "both": True}
+          and demo["progress"]["stalled_verdict"] == "SUBJECT_STALLED"
+          and demo["progress"]["advancing_verdict"] == "CONTINUOUS")
 
     lines: list[str] = []
     lines.append("MOONSHOT-M  the machine that can attest its own continuity")
@@ -329,6 +350,9 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
     lines.append("   before the run (report / probe / token / both), so the verdict follows a")
     lines.append("   stated rule rather than the reader's belief -- and 'report', the default,")
     lines.append("   settles nothing, which is the honest answer when no rule was given.")
+    lines.append("   Liveness is not progress: each beat also carries an advancing signal, so a")
+    lines.append("   subject that stays alive and stops advancing is reported SUBJECT_STALLED --")
+    lines.append("   the failure no gap or identity check can see.")
     lines.append("")
 
     lines.append("4. THE WITNESS, RUN")
@@ -354,6 +378,10 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
                  f"'report' -> {pol['reattributed_verdict']}")
     lines.append(f"     it is a break under {[p for p, b in pol['vouch_conflict_break'].items() if b]}"
                  f", excused only under {[p for p, b in pol['vouch_conflict_break'].items() if not b]}")
+    pr = demo["progress"]
+    lines.append(f"   progress (liveness is not advance): a flat counter -> {pr['stalled_verdict']} "
+                 f"({pr['stalled_beats']} flat beats, threshold {pr['stall_after']}); an "
+                 f"advancing counter -> {pr['advancing_verdict']}")
     lines.append("   absences (what did not change):")
     for row in demo["absences"]:
         state = "held steady" if not row["changed"] else "changed"

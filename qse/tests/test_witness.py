@@ -16,11 +16,12 @@ from ..witness import continuity, power
 from .support import Workspace, pin_clock
 
 
-def _beat(path, index: int, *, boot: float = 500.0, watches=None, subject=None) -> None:
+def _beat(path, index: int, *, boot: float = 500.0, watches=None, subject=None,
+          progress=None) -> None:
     """A fully injected heartbeat, so a history can be replayed without waiting."""
     continuity.beat(path, wall=1_000.0 + index * 60.0, mono=index * 60.0,
                     boot=boot, pid=1, interval=60.0, watches=watches or {},
-                    subject=subject)
+                    subject=subject, progress=progress)
 
 
 class TheBeatLedger(unittest.TestCase):
@@ -256,6 +257,64 @@ class TheSubjectTheRecordIsAbout(unittest.TestCase):
         proc.terminate()
         proc.wait(timeout=5)
         self.assertIsNone(continuity.subject_identity(proc.pid))
+
+
+class TheProgressSignal(unittest.TestCase):
+    """Liveness is not progress: a subject can stay alive and advance nothing."""
+
+    def setUp(self) -> None:
+        pin_clock()
+        self.ws = Workspace()
+        self.addCleanup(self.ws.close)
+        self.path = self.ws.ledger("w.jsonl")
+
+    def _run(self, values, *, subject=None):
+        for i, value in enumerate(values):
+            _beat(self.path, i, subject=subject, progress=value)
+        return continuity.verify(self.path, sleeps=[])
+
+    def test_a_counter_that_advances_is_continuous(self):
+        report = self._run([0.0, 1.0, 2.0, 5.0])
+        self.assertEqual(report["progress_counts"], {"PROGRESS_ADVANCING": 3})
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_a_counter_that_holds_flat_to_the_threshold_is_a_stall(self):
+        # The subject is perfectly fine -- same identity every beat -- and it advances
+        # nothing, which is the failure no gap or identity check can see.
+        job = {"name": "job", "pid": 7, "started": "t0"}
+        report = self._run([7.0, 7.0, 7.0, 7.0], subject=job)
+        self.assertEqual(report["subject_counts"], {"SUBJECT_OK": 3})
+        self.assertEqual(report["longest_flat"], 3)
+        self.assertEqual(len(report["stalls"]), 1)
+        self.assertEqual(report["verdict"], "SUBJECT_STALLED")
+
+    def test_a_flat_pair_alone_is_not_yet_a_stall(self):
+        report = self._run([3.0, 3.0, 3.0])
+        self.assertEqual(report["longest_flat"], 2)
+        self.assertEqual(report["stalls"], [])
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_the_stall_threshold_is_declarable(self):
+        self.assertEqual(self._run([0.0, 0.0, 0.0])["verdict"], "CONTINUOUS")
+        report = continuity.verify(self.path, sleeps=[], stall_after=2)
+        self.assertEqual(report["stall_after"], 2)
+        self.assertEqual(report["verdict"], "SUBJECT_STALLED")
+
+    def test_a_counter_that_goes_backwards_is_a_break_not_a_stall(self):
+        report = self._run([10.0, 20.0, 5.0])
+        self.assertEqual(report["progress_counts"],
+                         {"PROGRESS_ADVANCING": 1, "PROGRESS_REGRESSED": 1})
+        self.assertEqual(len(report["regressions"]), 1)
+        self.assertEqual(report["verdict"], "SUBJECT_BROKE")
+
+    def test_a_beat_with_no_progress_carries_no_signal(self):
+        report = self._run([1.0, None, None])
+        self.assertEqual(report["progress_counts"], {"PROGRESS_NO_SIGNAL": 2})
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_a_non_numeric_progress_is_refused(self):
+        with self.assertRaises(ValueError):
+            continuity.beat(self.path, wall=1.0, progress="lots")
 
 
 class ThePowerLogWitness(unittest.TestCase):

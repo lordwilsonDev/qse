@@ -61,6 +61,12 @@ class TheMoonshotMachine(unittest.TestCase):
         self.assertEqual(pol["reattributed_verdict"], "SUBJECT_BROKE")
         self.assertEqual(pol["vouch_conflict_break"],
                          {"report": True, "probe": True, "token": False, "both": True})
+        # Liveness is not progress: a subject that stays alive and advances nothing is
+        # reported SUBJECT_STALLED, while an advancing one stays CONTINUOUS.
+        prog = payload["demo"]["progress"]
+        self.assertEqual(prog["stalled_verdict"], "SUBJECT_STALLED")
+        self.assertEqual(prog["stalled_beats"], prog["stall_after"])
+        self.assertEqual(prog["advancing_verdict"], "CONTINUOUS")
 
     def test_the_page_names_the_moonshot_and_its_verdict(self):
         out = io.StringIO()
@@ -71,6 +77,7 @@ class TheMoonshotMachine(unittest.TestCase):
         self.assertIn("MOONSHOT-M", page)
         self.assertIn("THE INVERSE CAPABILITY HOLDS", page)
         self.assertIn("SUBJECT_BROKE", page)
+        self.assertIn("SUBJECT_STALLED", page)
 
 
 if __name__ == "__main__":  # pragma: no cover

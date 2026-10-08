@@ -102,6 +102,18 @@ So the inverse capability is:
   visible in the record rather than buried in a verdict. A reader may restate the policy
   explicitly, which re-reads the same bytes under a different *stated* rule; nothing is
   settled silently. An unknown policy is refused, not defaulted.
+- **Liveness is not progress.** A subject can be perfectly `CONTINUOUS` -- same
+  identity, same token, beats on time -- while deadlocked, waiting on a lock, or looping
+  over an empty queue. Each beat may therefore carry an advancing **`progress`** signal
+  (a sequence number, a row count, a queue position), and the verifier compares it across
+  beats: `PROGRESS_ADVANCING`, `PROGRESS_FLAT`, `PROGRESS_REGRESSED` (a monotone counter
+  going backwards -- a hard discontinuity, not a standstill), or `PROGRESS_NO_SIGNAL`
+  when either beat reported none. A run of consecutive flat beats at or over a
+  *declared* threshold (`stall_after`, like the interval and the slack -- a convention,
+  not a measurement) makes the verdict `SUBJECT_STALLED`: the subject is alive and
+  advancing nothing, which is the failure no gap or identity check can see. A single flat
+  pair is not yet a stall; a regression is reported as `SUBJECT_BROKE`, kept distinct
+  from a stall because standing still and going backwards are different findings.
 - **Absence is evidence.** A watched metric that never moved is computed and reported
   with the same standing a change would get, because "the disk did not fill" is exactly
   what a log of changes can never show.
@@ -127,6 +139,7 @@ $ python3 moonshot_machine.py
      injected: a new process, the same token -> SUBJECT_VOUCH_CONFLICT
      injected: same process, a new token     -> SUBJECT_TOKEN_DRIFT
      injected: a new process, a new token    -> SUBJECT_RESTARTED
+   progress (liveness is not advance): a flat counter -> SUBJECT_STALLED (3 flat beats, threshold 3); an advancing counter -> CONTINUOUS
    OS power witness: 0 sleep interval(s) in the log
 ```
 
@@ -164,15 +177,22 @@ Exit `0` when every demonstration holds, `1` when one does not, `2` for unusable
   produced no real sleep to classify. The classification of a real sleep is exercised by
   construction, not by having witnessed one; that is stated rather than hidden.
 
+- **The progress signal is supplied by the subject, and the record trusts it.** The
+  stall check compares whatever number the caller wrote into `progress`; it does not
+  establish that the number is the subject's real work. A subject that loops while
+  incrementing a counter would read as advancing, and one that advances without reporting
+  reads as no signal. Progress is measured, not verified -- the open question below.
+
 ## Next question (the one the build produced)
 
-The declared policy settles *identity* disagreements, which exposes the next gap: the
-record attests **liveness, not progress.** A subject can be perfectly `CONTINUOUS` -- same
-process, same token, heartbeats on time -- while it is deadlocked, waiting on a lock, or
-looping over an empty queue and doing nothing. That is the same shape as the inversion that
-started this moonshot: the failure you can see (a process that stopped) is the one you
-already catch; the failure that matters is the one the record cannot see (a process that
-kept running and made no progress). The next question is whether a beat should carry a
-*progress* signal -- a value the subject advances (a sequence number, a row count, a queue
-position) -- so the witness can report `CONTINUOUS but not advancing`, which no liveness
-check can. That is a new failure class, not a parameter of the current one.
+The progress check catches a subject that stays alive and advances nothing, but it reads a
+number the subject itself supplies: a `progress` the caller writes into the beat. So the
+next gap has the same shape as every one before it -- the witness still trusts a report it
+cannot check. A subject could increment its counter while making no real advance, and an
+honest one could advance while reporting nothing. The next question is whether progress can
+be witnessed a *second* way -- a **side effect** of the work the subject claims (a row that
+appears downstream, a file that grew, a queue that drained), read independently of the
+counter -- so the record can report where the declared progress and the observed effect
+disagree. That is the same two-witness pattern already applied to identity, now applied to
+advance: neither the counter nor the side effect is authoritative, and their disagreement
+is the finding.

@@ -111,8 +111,11 @@ same standing a change would get, because "the disk did not fill" is exactly wha
 changes can never show. And a disagreement between the two witnesses is settled by a
 **policy declared before the run** (`report` / `probe` / `token` / `both`), recorded and
 applied, so the verdict follows a stated rule that a reader can restate -- nothing is
-settled silently. The full inversions and the honest limits are in
-[docs/moonshot-m.md](docs/moonshot-m.md).
+settled silently. It also separates **liveness from progress**: each beat may carry an
+advancing signal, so a subject that stays alive and advances nothing over a declared
+threshold is reported `SUBJECT_STALLED` -- the failure no gap or identity check can see --
+while a counter that goes backwards is `SUBJECT_BROKE`. The full inversions and the honest
+limits are in [docs/moonshot-m.md](docs/moonshot-m.md).
 
 ## MOONSHOT-C — the same test on a cloud bill, in one script
 
@@ -273,7 +276,7 @@ cd ~/projects/qse
 python3 -B -W error::ResourceWarning -m unittest discover -s qse/tests -t .
 ```
 
-385 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
+392 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
 resolves) and so does `-B` (bytecode caches left in the tree are noise).
 
 ## The seven slots
@@ -323,7 +326,7 @@ qse/control/        replayable state, policy, information gain, the controller
 qse/ledger/         hash-chained JSONL events, receipts, the "why" reconstruction
 qse/metrics/        QBY, BSR, EC, BC, VI, OC
 qse/cloud/          the MOONSHOT-C synthetic cloud fixture (scenario.py)
-qse/witness/        MOONSHOT-M: the continuity ledger and the OS power-log witness
+qse/witness/        MOONSHOT-M: the continuity ledger, OS power-log witness, and progress check
 qse/cli.py          the command line
 moonshot_cloud.py   MOONSHOT-C: the same terminal comparison, on a cloud bill, in one command
 moonshot_machine.py MOONSHOT-M: invert a machine's axioms and build the witness, in one command

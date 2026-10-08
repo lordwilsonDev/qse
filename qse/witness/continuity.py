@@ -96,6 +96,44 @@ def resolve_subject(kind: str, policy: str) -> tuple[bool, str]:
         return True, "the subject's continuity is not established"
     return False, "no break under this policy"
 
+
+#: How a subject *advances*. Liveness is not progress: a process can be perfectly
+#: continuous -- same identity, same token, beats on time -- while deadlocked, waiting on
+#: a lock, or looping over an empty queue. This is the fourth surface (after the recorder's
+#: gaps, the subject's identity, and the two witnesses' agreement), and it catches the
+#: failure the others structurally cannot: the one that keeps running and does nothing.
+PROGRESS_KINDS = ("PROGRESS_ADVANCING", "PROGRESS_FLAT", "PROGRESS_REGRESSED",
+                  "PROGRESS_NO_SIGNAL")
+
+#: How many consecutive flat beats before a stall is declared. A declared convention, like
+#: the beat interval and the slack -- not a measurement.
+DEFAULT_STALL_AFTER = 3
+
+
+def progress_of(record: Mapping[str, Any]) -> float | None:
+    """The numeric progress a beat reported, or ``None`` when it reported none."""
+    value = record.get("progress")
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def classify_progress(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dict[str, Any]:
+    """Compare the progress signal across two beats. A flat pair is not yet a stall."""
+    before = progress_of(previous)
+    after = progress_of(current)
+    if before is None or after is None:
+        return {"kind": "PROGRESS_NO_SIGNAL",
+                "why": "no numeric progress was reported on both beats"}
+    delta = round(after - before, 6)
+    if after > before:
+        return {"kind": "PROGRESS_ADVANCING", "delta": delta,
+                "why": f"the progress signal advanced by {delta:g}"}
+    if after < before:
+        return {"kind": "PROGRESS_REGRESSED", "delta": delta,
+                "why": f"the progress signal went backwards by {abs(delta):g}, which a "
+                       "monotone counter cannot do without resetting"}
+    return {"kind": "PROGRESS_FLAT", "delta": 0.0,
+            "why": "the progress signal did not advance between these beats"}
+
 #: The fields of a subject identity that must not change across a restart. A pid can be
 #: reused; a start time cannot be reproduced by a new process, so both are kept.
 SUBJECT_FIELDS = ("name", "pid", "started")
@@ -132,6 +170,7 @@ def beat(
     pid: int | None = None,
     watches: Mapping[str, Any] | None = None,
     subject: Mapping[str, Any] | None = None,
+    progress: float | None = None,
     policy: str | None = None,
     interval: float = DEFAULT_INTERVAL,
     note: str = "",
@@ -150,9 +189,12 @@ def beat(
     """
     if policy is not None and policy not in POLICIES:
         raise ValueError(f"unknown subject policy {policy!r}; choose from {POLICIES}")
+    if progress is not None and not isinstance(progress, (int, float)):
+        raise ValueError(f"progress must be a number or None, got {type(progress).__name__}")
     record = {
         "ev": BEAT,
         "subject": dict(subject) if subject else None,
+        "progress": (None if progress is None else float(progress)),
         "policy": (str(policy) if policy else None),
         "wall": round(float(time.time() if wall is None else wall), 6),
         "mono": round(float(time.monotonic() if mono is None else mono), 6),
@@ -314,6 +356,7 @@ def verify(
     sleeps: Sequence[power.Sleep] | None = None,
     slack: float = SLACK,
     policy: str | None = None,
+    stall_after: int = DEFAULT_STALL_AFTER,
 ) -> dict[str, Any]:
     """Check the chain and classify every interval in it. Reports, never rounds up."""
     lines = chain.read_lines(path)
@@ -333,6 +376,12 @@ def verify(
         "subject_breaks": [],
         "subject_witnesses": {},
         "policy": None,
+        "progress_transitions": [],
+        "progress_counts": {},
+        "stalls": [],
+        "regressions": [],
+        "longest_flat": 0,
+        "stall_after": None,
         "power_sleeps": None,
         "verdict": "EMPTY",
     }
@@ -402,12 +451,48 @@ def verify(
             witnesses["disagreements"] += 1
     result["subject_witnesses"] = witnesses
 
+    # Progress: liveness is not advance. A run of consecutive flat beats at or over
+    # ``stall_after`` is a stall -- the subject is alive and making no progress, which no
+    # identity or gap check can see. A regression is a hard discontinuity and is reported
+    # separately, because a monotone signal going backwards is not the same as standing still.
+    result["stall_after"] = stall_after
+    progress_rows = [classify_progress(a, b) for a, b in zip(beats, beats[1:])]
+    result["progress_transitions"] = progress_rows
+    progress_counts: dict[str, int] = {}
+    for row in progress_rows:
+        progress_counts[row["kind"]] = progress_counts.get(row["kind"], 0) + 1
+    result["progress_counts"] = progress_counts
+
+    runs: list[int] = []
+    run = 0
+    for row in progress_rows:
+        if row["kind"] == "PROGRESS_FLAT":
+            run += 1
+        else:
+            if run:
+                runs.append(run)
+            run = 0
+    if run:
+        runs.append(run)
+    result["longest_flat"] = max(runs, default=0)
+    result["stalls"] = [
+        {"flat_beats": n,
+         "why": f"the subject stayed alive and its progress signal held flat for {n} "
+                f"consecutive beats (threshold {stall_after}): liveness without advance"}
+        for n in runs if n >= stall_after
+    ]
+    result["regressions"] = [row for row in progress_rows if row["kind"] == "PROGRESS_REGRESSED"]
+
     if not beats:
         result["verdict"] = "EMPTY"
     elif result["lost"]:
         result["verdict"] = "BROKEN"
     elif result["subject_breaks"]:
         result["verdict"] = "SUBJECT_BROKE"
+    elif result["regressions"]:
+        result["verdict"] = "SUBJECT_BROKE"
+    elif result["stalls"]:
+        result["verdict"] = "SUBJECT_STALLED"
     else:
         result["verdict"] = "CONTINUOUS"
     return result
