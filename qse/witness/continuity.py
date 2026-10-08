@@ -134,6 +134,73 @@ def classify_progress(previous: Mapping[str, Any], current: Mapping[str, Any]) -
     return {"kind": "PROGRESS_FLAT", "delta": 0.0,
             "why": "the progress signal did not advance between these beats"}
 
+
+#: The side-effect witness: the same two-witness pattern as identity -- the declared value
+#: against the observed value -- now applied to *advance*. ``progress`` is what the subject
+#: says it did; ``effect`` is what the recorder read from the world. This axis is deliberately
+#: *not* routed through the identity policy: the two identity witnesses could each be wrong in
+#: either direction, so their disagreement needed a declared rule, but here the directions are
+#: asymmetric -- a claimed advance the world does not show is the inverse failure this whole
+#: moonshot exists to catch, and an advance the world shows unclaimed is benign -- so the
+#: asymmetry, not a policy, is the finding.
+EFFECT_KINDS = ("EFFECT_AGREES", "EFFECT_UNSUBSTANTIATED", "EFFECT_UNREPORTED",
+                "EFFECT_NO_SIGNAL")
+
+
+def effect_of(record: Mapping[str, Any]) -> float | None:
+    """The side effect the *recorder* observed (a size, a count, a depth), or ``None``.
+
+    Kept in a field of its own, apart from ``progress``: the subject writes ``progress``,
+    the recorder reads ``effect``. Only the separation lets the record say where the two
+    disagree, which is the same discipline identity and its token follow.
+    """
+    value = record.get("effect")
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def file_effect(path: str | os.PathLike[str]) -> float | None:
+    """A ready-made side effect: a file's size in bytes, or ``None`` when unreadable.
+
+    A file the subject is supposed to grow is an observation the recorder can make for
+    itself, from the world rather than from any counter the subject reports. It is a
+    convenience, not the only effect -- any number the caller reads from a source the
+    subject does not control will do.
+    """
+    try:
+        return float(os.path.getsize(path))
+    except OSError:
+        return None
+
+
+def classify_effect(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dict[str, Any]:
+    """Compare the *claimed* progress against the *observed* side effect across two beats.
+
+    * ``EFFECT_UNSUBSTANTIATED`` -- the subject reports an advance and the observed effect
+      does not move: progress the world does not show. A single beat may be lag, so this is
+      treated as a finding only when it is sustained (see ``verify``).
+    * ``EFFECT_UNREPORTED`` -- the observed effect advances while the subject reports none:
+      work in the world the subject did not claim, which is under-reporting, not a break.
+    * ``EFFECT_AGREES`` -- the two did not diverge (both advanced, or both held).
+    * ``EFFECT_NO_SIGNAL`` -- a ``progress`` or ``effect`` value was missing on one beat.
+    """
+    declared_before, declared_after = progress_of(previous), progress_of(current)
+    observed_before, observed_after = effect_of(previous), effect_of(current)
+    if None in (declared_before, declared_after, observed_before, observed_after):
+        return {"kind": "EFFECT_NO_SIGNAL",
+                "why": "a progress or effect value was missing on one of the two beats"}
+    declared = round(declared_after - declared_before, 6)
+    observed = round(observed_after - observed_before, 6)
+    if declared > 0 and observed <= 0:
+        return {"kind": "EFFECT_UNSUBSTANTIATED", "declared": declared, "observed": observed,
+                "why": f"the subject reports advancing by {declared:g} while the observed "
+                       "side effect did not move: a claimed advance the world does not show"}
+    if declared <= 0 and observed > 0:
+        return {"kind": "EFFECT_UNREPORTED", "declared": declared, "observed": observed,
+                "why": f"the observed side effect advanced by {observed:g} while the subject "
+                       "did not report it: an advance in the world, unclaimed"}
+    return {"kind": "EFFECT_AGREES", "declared": declared, "observed": observed,
+            "why": "the claimed progress and the observed side effect did not diverge"}
+
 #: The fields of a subject identity that must not change across a restart. A pid can be
 #: reused; a start time cannot be reproduced by a new process, so both are kept.
 SUBJECT_FIELDS = ("name", "pid", "started")
@@ -171,6 +238,7 @@ def beat(
     watches: Mapping[str, Any] | None = None,
     subject: Mapping[str, Any] | None = None,
     progress: float | None = None,
+    effect: float | None = None,
     policy: str | None = None,
     interval: float = DEFAULT_INTERVAL,
     note: str = "",
@@ -191,10 +259,13 @@ def beat(
         raise ValueError(f"unknown subject policy {policy!r}; choose from {POLICIES}")
     if progress is not None and not isinstance(progress, (int, float)):
         raise ValueError(f"progress must be a number or None, got {type(progress).__name__}")
+    if effect is not None and not isinstance(effect, (int, float)):
+        raise ValueError(f"effect must be a number or None, got {type(effect).__name__}")
     record = {
         "ev": BEAT,
         "subject": dict(subject) if subject else None,
         "progress": (None if progress is None else float(progress)),
+        "effect": (None if effect is None else float(effect)),
         "policy": (str(policy) if policy else None),
         "wall": round(float(time.time() if wall is None else wall), 6),
         "mono": round(float(time.monotonic() if mono is None else mono), 6),
@@ -382,6 +453,11 @@ def verify(
         "regressions": [],
         "longest_flat": 0,
         "stall_after": None,
+        "effect_transitions": [],
+        "effect_counts": {},
+        "unsubstantiated": [],
+        "longest_unsubstantiated": 0,
+        "effect_witnesses": {},
         "power_sleeps": None,
         "verdict": "EMPTY",
     }
@@ -463,10 +539,26 @@ def verify(
         progress_counts[row["kind"]] = progress_counts.get(row["kind"], 0) + 1
     result["progress_counts"] = progress_counts
 
+    # The side-effect witness: the claimed advance checked against what the recorder read
+    # from the world. A sustained run of claimed advances the world does not show is the
+    # inverse failure this moonshot exists to catch -- a subject reporting progress it did
+    # not make. A single divergence may be lag, so the finding is the run, not the beat.
+    effect_rows = [classify_effect(a, b) for a, b in zip(beats, beats[1:])]
+    result["effect_transitions"] = effect_rows
+    effect_counts: dict[str, int] = {}
+    for row in effect_rows:
+        effect_counts[row["kind"]] = effect_counts.get(row["kind"], 0) + 1
+    result["effect_counts"] = effect_counts
+
+    # A stall is now a claim the second witness can refute: a flat counter over the
+    # threshold counts only while the observed effect is *not* advancing. When the world
+    # shows work the subject did not report (EFFECT_UNREPORTED), the subject is silent, not
+    # stalled -- the two-witness rule catching a false stall as well as a false advance.
+    refuted = {"EFFECT_UNREPORTED"}
     runs: list[int] = []
     run = 0
-    for row in progress_rows:
-        if row["kind"] == "PROGRESS_FLAT":
+    for progress_row, effect_row in zip(progress_rows, effect_rows):
+        if progress_row["kind"] == "PROGRESS_FLAT" and effect_row["kind"] not in refuted:
             run += 1
         else:
             if run:
@@ -483,6 +575,29 @@ def verify(
     ]
     result["regressions"] = [row for row in progress_rows if row["kind"] == "PROGRESS_REGRESSED"]
 
+    unsubstantiated_runs: list[int] = []
+    run = 0
+    for row in effect_rows:
+        if row["kind"] == "EFFECT_UNSUBSTANTIATED":
+            run += 1
+        else:
+            if run:
+                unsubstantiated_runs.append(run)
+            run = 0
+    if run:
+        unsubstantiated_runs.append(run)
+    result["longest_unsubstantiated"] = max(unsubstantiated_runs, default=0)
+    result["unsubstantiated"] = [
+        {"beats": n,
+         "why": f"the subject claimed an advance on {n} consecutive beats (threshold "
+                f"{stall_after}) that the observed side effect did not show"}
+        for n in unsubstantiated_runs if n >= stall_after
+    ]
+    result["effect_witnesses"] = {
+        "unsubstantiated": effect_counts.get("EFFECT_UNSUBSTANTIATED", 0),
+        "unreported": effect_counts.get("EFFECT_UNREPORTED", 0),
+    }
+
     if not beats:
         result["verdict"] = "EMPTY"
     elif result["lost"]:
@@ -491,6 +606,8 @@ def verify(
         result["verdict"] = "SUBJECT_BROKE"
     elif result["regressions"]:
         result["verdict"] = "SUBJECT_BROKE"
+    elif result["unsubstantiated"]:
+        result["verdict"] = "SUBJECT_UNSUBSTANTIATED"
     elif result["stalls"]:
         result["verdict"] = "SUBJECT_STALLED"
     else:

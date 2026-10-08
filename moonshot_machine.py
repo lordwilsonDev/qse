@@ -161,9 +161,14 @@ def invert() -> tuple[list[Any], list[dict[str, Any]]]:
 def _witness_demo(directory: Path) -> dict[str, Any]:
     """Run the witness for real, then on injected histories the machine cannot stage."""
     real = str(directory / "witness.jsonl")
+    produced = directory / "produced.log"  # a REAL side effect the recorder reads for itself
+    produced.write_bytes(b"")
     interval = 1.0
     for tick in range(4):
+        with produced.open("ab") as fh:  # the subject does work ...
+            fh.write(b"tick\n" * 64)
         continuity.beat(real, interval=interval, progress=float(tick),
+                        effect=continuity.file_effect(produced),  # ... the recorder reads it
                         watches={"disk_free_gb": round(shutil.disk_usage("/").free / 1073741824, 1),
                                  "load1": round(os.getloadavg()[0], 2)})
         time.sleep(0.05)
@@ -258,6 +263,24 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
     advancing = continuity.verify(_progress_ledger("advancing.jsonl", [1, 2, 3, 4]),
                                   sleeps=[], stall_after=3)
 
+    # The side-effect witness: the claimed counter checked against what the recorder reads
+    # from the world. The real ledger above is backed by a file that actually grows; these
+    # injected ledgers show the two ways the world and the claim can disagree -- a claimed
+    # advance nothing substantiates, and an advance the subject never claimed.
+    def _effect_ledger(name: str, declared: list[float], observed: list[float]) -> str:
+        path = str(directory / name)
+        for i, (decl, eff) in enumerate(zip(declared, observed)):
+            continuity.beat(path, wall=1_000.0 + i * 60.0, mono=i * 60.0, boot=500.0,
+                            pid=1, interval=60.0, progress=decl, effect=eff)
+        return path
+
+    unsubstantiated = continuity.verify(
+        _effect_ledger("unsubstantiated.jsonl", [1, 2, 3, 4], [10, 10, 10, 10]),
+        sleeps=[], stall_after=3)  # claims advance; the world shows none
+    unreported = continuity.verify(
+        _effect_ledger("unreported.jsonl", [1, 1, 1, 1], [10, 20, 30, 40]),
+        sleeps=[], stall_after=3)  # the world advances; the subject says nothing
+
     return {
         "real": {"ledger": real, "verdict": report["verdict"], "beats": report["beats"],
                  "chain_ok": report["chain_ok"], "counts": report["counts"],
@@ -277,6 +300,10 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
                      "stalled_beats": stalled["longest_flat"],
                      "advancing_verdict": advancing["verdict"],
                      "stall_after": stalled["stall_after"]},
+        "effect": {"agrees_verdict": report["verdict"],  # the real ledger, backed by a growing file
+                   "unsubstantiated_verdict": unsubstantiated["verdict"],
+                   "unsubstantiated_beats": unsubstantiated["longest_unsubstantiated"],
+                   "unreported_verdict": unreported["verdict"]},
         "absences": continuity.absences(real),
         "power_sleeps_recorded": len(power.load()),
     }
@@ -303,7 +330,10 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
           and demo["policy"]["vouch_conflict_break"] == {"report": True, "probe": True,
                                                           "token": False, "both": True}
           and demo["progress"]["stalled_verdict"] == "SUBJECT_STALLED"
-          and demo["progress"]["advancing_verdict"] == "CONTINUOUS")
+          and demo["progress"]["advancing_verdict"] == "CONTINUOUS"
+          and demo["effect"]["agrees_verdict"] == "CONTINUOUS"
+          and demo["effect"]["unsubstantiated_verdict"] == "SUBJECT_UNSUBSTANTIATED"
+          and demo["effect"]["unreported_verdict"] == "CONTINUOUS")
 
     lines: list[str] = []
     lines.append("MOONSHOT-M  the machine that can attest its own continuity")
@@ -352,7 +382,11 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
     lines.append("   settles nothing, which is the honest answer when no rule was given.")
     lines.append("   Liveness is not progress: each beat also carries an advancing signal, so a")
     lines.append("   subject that stays alive and stops advancing is reported SUBJECT_STALLED --")
-    lines.append("   the failure no gap or identity check can see.")
+    lines.append("   the failure no gap or identity check can see. And progress is checked against")
+    lines.append("   the world, not only reported: the subject's counter is compared with a side")
+    lines.append("   effect the recorder reads for itself (a file it grows), so a claimed advance")
+    lines.append("   nothing substantiates is reported SUBJECT_UNSUBSTANTIATED -- the same")
+    lines.append("   two-witness pattern, now applied to advance rather than identity.")
     lines.append("")
 
     lines.append("4. THE WITNESS, RUN")
@@ -382,6 +416,11 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
     lines.append(f"   progress (liveness is not advance): a flat counter -> {pr['stalled_verdict']} "
                  f"({pr['stalled_beats']} flat beats, threshold {pr['stall_after']}); an "
                  f"advancing counter -> {pr['advancing_verdict']}")
+    ef = demo["effect"]
+    lines.append(f"   side effect (the counter vs the world): a real growing file -> "
+                 f"{ef['agrees_verdict']}; a claimed advance the world does not show -> "
+                 f"{ef['unsubstantiated_verdict']} ({ef['unsubstantiated_beats']} beats); "
+                 f"an unclaimed advance -> {ef['unreported_verdict']}")
     lines.append("   absences (what did not change):")
     for row in demo["absences"]:
         state = "held steady" if not row["changed"] else "changed"

@@ -114,6 +114,18 @@ So the inverse capability is:
   advancing nothing, which is the failure no gap or identity check can see. A single flat
   pair is not yet a stall; a regression is reported as `SUBJECT_BROKE`, kept distinct
   from a stall because standing still and going backwards are different findings.
+- **Progress is checked against the world, not only reported.** The counter is what the
+  subject *says* it did; a `file_effect` (a file's size) or any number the recorder reads
+  from a source the subject does not control is what the world *shows*. The verifier
+  compares the two across beats: `EFFECT_AGREES`, `EFFECT_UNSUBSTANTIATED` (the subject
+  reports an advance the observed effect does not show -- a claimed advance nothing
+  substantiates, reported as a *sustained* run because a single beat may be lag), or
+  `EFFECT_UNREPORTED` (the world advances while the subject reports nothing: work
+  unclaimed, which is under-reporting, not a break). A sustained run of unsubstantiated
+  advances makes the verdict `SUBJECT_UNSUBSTANTIATED` -- the same two-witness pattern as
+  identity, now applied to advance. The second witness also *refutes a false stall*: a flat
+  counter the observed effect contradicts is `EFFECT_UNREPORTED`, so the subject is silent
+  rather than stalled, and the stall does not fire.
 - **Absence is evidence.** A watched metric that never moved is computed and reported
   with the same standing a change would get, because "the disk did not fill" is exactly
   what a log of changes can never show.
@@ -140,6 +152,7 @@ $ python3 moonshot_machine.py
      injected: same process, a new token     -> SUBJECT_TOKEN_DRIFT
      injected: a new process, a new token    -> SUBJECT_RESTARTED
    progress (liveness is not advance): a flat counter -> SUBJECT_STALLED (3 flat beats, threshold 3); an advancing counter -> CONTINUOUS
+   side effect (the counter vs the world): a real growing file -> CONTINUOUS; a claimed advance the world does not show -> SUBJECT_UNSUBSTANTIATED (3 beats); an unclaimed advance -> CONTINUOUS
    OS power witness: 0 sleep interval(s) in the log
 ```
 
@@ -177,22 +190,27 @@ Exit `0` when every demonstration holds, `1` when one does not, `2` for unusable
   produced no real sleep to classify. The classification of a real sleep is exercised by
   construction, not by having witnessed one; that is stated rather than hidden.
 
-- **The progress signal is supplied by the subject, and the record trusts it.** The
-  stall check compares whatever number the caller wrote into `progress`; it does not
-  establish that the number is the subject's real work. A subject that loops while
-  incrementing a counter would read as advancing, and one that advances without reporting
-  reads as no signal. Progress is measured, not verified -- the open question below.
+- **The progress signal is supplied by the subject, and the side effect is chosen by the
+  caller.** The stall check compares whatever number the caller wrote into `progress`, and
+  the side-effect check compares it with whatever number the caller chose to read. Neither
+  establishes that the number *is* the subject's real work. A side effect the subject also
+  controls is not independent, and a subject that loops while incrementing a counter while
+  also touching the watched file would read as agreeing. Progress and its corroboration are
+  measured, not verified -- the reader must pick an effect the subject cannot forge.
 
 ## Next question (the one the build produced)
 
-The progress check catches a subject that stays alive and advances nothing, but it reads a
-number the subject itself supplies: a `progress` the caller writes into the beat. So the
-next gap has the same shape as every one before it -- the witness still trusts a report it
-cannot check. A subject could increment its counter while making no real advance, and an
-honest one could advance while reporting nothing. The next question is whether progress can
-be witnessed a *second* way -- a **side effect** of the work the subject claims (a row that
-appears downstream, a file that grew, a queue that drained), read independently of the
-counter -- so the record can report where the declared progress and the observed effect
-disagree. That is the same two-witness pattern already applied to identity, now applied to
-advance: neither the counter nor the side effect is authoritative, and their disagreement
-is the finding.
+The side-effect witness closed the "the counter is only the subject's word" gap, but it
+opened the same one one level up: the recorder now *chooses* what to watch, and a watched
+number that the subject can also move is not independent at all -- a subject that
+increments its counter and touches its output file reads as `EFFECT_AGREES` whether or not
+any real work happened. So the next gap has the same shape as every one before it -- the
+witness still trusts a source it cannot prove is beyond the subject's reach. The next
+question is whether the record can **attest the independence of its own witnesses**: rather
+than the caller asserting "this file is beyond the subject's reach", can the recorder show
+*why* the observed effect could not have been produced by the subject alone -- a source it
+read but did not write, a value with a causal trail back to the work (a downstream
+consumer's count, a checksum of an artifact the subject cannot author), or two effects that
+would have to agree for a forgery to pass. That is the same move one more time: agreement
+is not enough; the record must show the witnesses are *independent*, and independence is
+the thing no report can simply assert.

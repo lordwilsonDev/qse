@@ -5,21 +5,22 @@ MOONSHOT-M. See ``docs/moonshot-m.md`` for the inversions this was built from, a
 """
 
 from . import continuity, power
-from .continuity import (BEAT, DEFAULT_INTERVAL, DEFAULT_STALL_AFTER, POLICIES,
+from .continuity import (BEAT, DEFAULT_INTERVAL, DEFAULT_STALL_AFTER, EFFECT_KINDS, POLICIES,
                         PROGRESS_KINDS, SLACK, SUBJECT_FIELDS, SUBJECT_KINDS,
                         SUBJECT_TOKEN_DRIFT, SUBJECT_VOUCH_CONFLICT,
-                        absences, beat, boot_time, classify, classify_progress,
-                        classify_subject, progress_of, resolve_subject,
-                        subject_identity, subject_token, verify)
+                        absences, beat, boot_time, classify, classify_effect,
+                        classify_progress, classify_subject, effect_of, file_effect,
+                        progress_of, resolve_subject, subject_identity, subject_token, verify)
 from .power import Sleep, covering, load as load_power_log, parse as parse_power_log, read as read_power_log
 
 __all__ = [
     "continuity", "power",
-    "BEAT", "DEFAULT_INTERVAL", "DEFAULT_STALL_AFTER", "POLICIES", "PROGRESS_KINDS",
-    "SLACK", "SUBJECT_FIELDS", "SUBJECT_KINDS",
+    "BEAT", "DEFAULT_INTERVAL", "DEFAULT_STALL_AFTER", "EFFECT_KINDS", "POLICIES",
+    "PROGRESS_KINDS", "SLACK", "SUBJECT_FIELDS", "SUBJECT_KINDS",
     "SUBJECT_TOKEN_DRIFT", "SUBJECT_VOUCH_CONFLICT",
-    "absences", "beat", "boot_time", "classify", "classify_progress",
-    "classify_subject", "progress_of", "resolve_subject",
+    "absences", "beat", "boot_time", "classify", "classify_effect",
+    "classify_progress", "classify_subject", "effect_of", "file_effect",
+    "progress_of", "resolve_subject",
     "subject_identity", "subject_token", "verify",
     "Sleep", "covering", "load_power_log", "parse_power_log", "read_power_log",
 ]

@@ -67,6 +67,13 @@ class TheMoonshotMachine(unittest.TestCase):
         self.assertEqual(prog["stalled_verdict"], "SUBJECT_STALLED")
         self.assertEqual(prog["stalled_beats"], prog["stall_after"])
         self.assertEqual(prog["advancing_verdict"], "CONTINUOUS")
+        # Progress checked against the world: a real growing file backs the real ledger; a
+        # claimed advance nothing substantiates is unsubstantiated; an unclaimed advance is
+        # benign (and must not be misread as a stall).
+        eff = payload["demo"]["effect"]
+        self.assertEqual(eff["agrees_verdict"], "CONTINUOUS")
+        self.assertEqual(eff["unsubstantiated_verdict"], "SUBJECT_UNSUBSTANTIATED")
+        self.assertEqual(eff["unreported_verdict"], "CONTINUOUS")
 
     def test_the_page_names_the_moonshot_and_its_verdict(self):
         out = io.StringIO()
@@ -78,6 +85,7 @@ class TheMoonshotMachine(unittest.TestCase):
         self.assertIn("THE INVERSE CAPABILITY HOLDS", page)
         self.assertIn("SUBJECT_BROKE", page)
         self.assertIn("SUBJECT_STALLED", page)
+        self.assertIn("SUBJECT_UNSUBSTANTIATED", page)
 
 
 if __name__ == "__main__":  # pragma: no cover

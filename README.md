@@ -114,8 +114,13 @@ applied, so the verdict follows a stated rule that a reader can restate -- nothi
 settled silently. It also separates **liveness from progress**: each beat may carry an
 advancing signal, so a subject that stays alive and advances nothing over a declared
 threshold is reported `SUBJECT_STALLED` -- the failure no gap or identity check can see --
-while a counter that goes backwards is `SUBJECT_BROKE`. The full inversions and the honest
-limits are in [docs/moonshot-m.md](docs/moonshot-m.md).
+while a counter that goes backwards is `SUBJECT_BROKE`. And the counter is checked against
+the world, not only reported: a side effect the recorder reads for itself (a file the
+subject grows) is compared with the declared progress, so a claimed advance nothing
+substantiates is `SUBJECT_UNSUBSTANTIATED`, an unclaimed advance is benign (and must not be
+misread as a stall), and the same two-witness pattern applied to identity is applied to
+advance. The full inversions and the honest limits are in
+[docs/moonshot-m.md](docs/moonshot-m.md).
 
 ## MOONSHOT-C — the same test on a cloud bill, in one script
 
@@ -276,7 +281,7 @@ cd ~/projects/qse
 python3 -B -W error::ResourceWarning -m unittest discover -s qse/tests -t .
 ```
 
-392 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
+399 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
 resolves) and so does `-B` (bytecode caches left in the tree are noise).
 
 ## The seven slots
@@ -326,7 +331,7 @@ qse/control/        replayable state, policy, information gain, the controller
 qse/ledger/         hash-chained JSONL events, receipts, the "why" reconstruction
 qse/metrics/        QBY, BSR, EC, BC, VI, OC
 qse/cloud/          the MOONSHOT-C synthetic cloud fixture (scenario.py)
-qse/witness/        MOONSHOT-M: the continuity ledger, OS power-log witness, and progress check
+qse/witness/        MOONSHOT-M: the continuity ledger, OS power-log witness, progress + side-effect check
 qse/cli.py          the command line
 moonshot_cloud.py   MOONSHOT-C: the same terminal comparison, on a cloud bill, in one command
 moonshot_machine.py MOONSHOT-M: invert a machine's axioms and build the witness, in one command

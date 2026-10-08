@@ -17,11 +17,11 @@ from .support import Workspace, pin_clock
 
 
 def _beat(path, index: int, *, boot: float = 500.0, watches=None, subject=None,
-          progress=None) -> None:
+          progress=None, effect=None) -> None:
     """A fully injected heartbeat, so a history can be replayed without waiting."""
     continuity.beat(path, wall=1_000.0 + index * 60.0, mono=index * 60.0,
                     boot=boot, pid=1, interval=60.0, watches=watches or {},
-                    subject=subject, progress=progress)
+                    subject=subject, progress=progress, effect=effect)
 
 
 class TheBeatLedger(unittest.TestCase):
@@ -315,6 +315,67 @@ class TheProgressSignal(unittest.TestCase):
     def test_a_non_numeric_progress_is_refused(self):
         with self.assertRaises(ValueError):
             continuity.beat(self.path, wall=1.0, progress="lots")
+
+
+class TheSideEffectWitness(unittest.TestCase):
+    """Progress checked against the world, not only reported by the subject."""
+
+    def setUp(self) -> None:
+        pin_clock()
+        self.ws = Workspace()
+        self.addCleanup(self.ws.close)
+        self.path = self.ws.ledger("w.jsonl")
+
+    def _run(self, declared, observed, **kw):
+        for i, (decl, eff) in enumerate(zip(declared, observed)):
+            _beat(self.path, i, progress=decl, effect=eff)
+        return continuity.verify(self.path, sleeps=[], **kw)
+
+    def test_a_claimed_advance_the_world_does_not_show_is_unsubstantiated(self):
+        report = self._run([1, 2, 3, 4], [10, 10, 10, 10], stall_after=3)
+        self.assertEqual(report["effect_counts"], {"EFFECT_UNSUBSTANTIATED": 3})
+        self.assertEqual(report["longest_unsubstantiated"], 3)
+        self.assertEqual(report["verdict"], "SUBJECT_UNSUBSTANTIATED")
+
+    def test_a_single_unsubstantiated_beat_may_be_lag_and_is_not_yet_a_finding(self):
+        # One beat of divergence is not declared a lie: only a sustained run is.
+        report = self._run([1, 2, 3], [10, 10, 30], stall_after=3)
+        self.assertEqual(report["effect_counts"], {"EFFECT_UNSUBSTANTIATED": 1,
+                                                    "EFFECT_AGREES": 1})
+        self.assertEqual(report["unsubstantiated"], [])
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_an_unclaimed_advance_is_reported_but_does_not_stall(self):
+        # The counter is flat -- which alone would be a stall -- but the world shows the
+        # work advancing, so the subject is silent, not stalled. The second witness refutes
+        # the false stall.
+        report = self._run([1, 1, 1, 1], [10, 20, 30, 40], stall_after=3)
+        self.assertEqual(report["effect_counts"], {"EFFECT_UNREPORTED": 3})
+        self.assertEqual(report["stalls"], [])
+        self.assertEqual(report["longest_flat"], 0)
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_a_counter_and_a_world_that_both_advance_agree(self):
+        report = self._run([1, 2, 3, 4], [10, 20, 30, 40], stall_after=3)
+        self.assertEqual(report["effect_counts"], {"EFFECT_AGREES": 3})
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_a_missing_effect_carries_no_side_effect_signal(self):
+        report = self._run([1, 2, 3], [None, None, None])
+        self.assertEqual(report["effect_counts"], {"EFFECT_NO_SIGNAL": 2})
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_the_file_effect_reads_a_real_side_effect(self):
+        produced = self.ws.path / "produced.log"
+        produced.write_bytes(b"")
+        self.assertEqual(continuity.file_effect(produced), 0.0)
+        produced.write_bytes(b"tick\n" * 32)
+        self.assertEqual(continuity.file_effect(produced), 160.0)
+        self.assertIsNone(continuity.file_effect(self.ws.path / "nope.log"))
+
+    def test_a_non_numeric_effect_is_refused(self):
+        with self.assertRaises(ValueError):
+            continuity.beat(self.path, wall=1.0, effect="lots")
 
 
 class ThePowerLogWitness(unittest.TestCase):
