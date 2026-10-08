@@ -63,7 +63,7 @@ python3 -m qse.cli invert "Can we predict operational bottlenecks before they be
 Exit codes are the verdict: `0` it did what it says and every check it ran holds,
 `1` a defect, a refusal, or an unmet condition, `2` input QSE cannot use at all.
 
-## The control arm, and the fixture that cannot carry one
+## The control arm, and the fixture that now carries one
 
 The moonshot's terminal test is a comparison -- *does engineered questioning
 create measurable capability that would not otherwise exist* -- so it needs a
@@ -73,38 +73,45 @@ correlation with the outcome and take the top one.
 
 `fair comparison` requires that doing so is *punished*. `qse.cli fixture` asks
 whether the columns which outrank the real driver on the fitting sample keep that
-strength on data the fit never saw. On the shipped scenario they do:
+strength on data the fit never saw. The shipped holdout is now generated
+(`scripts/generate_holdout.py`) as a period in which the fitting-sample confounds
+are absent, so they do not:
 
 ```text
     column                  fit r  holdout r
-    staff_on_shift         -0.810     -0.791     <- the naive arm picks this
-    system_latency_ms      +0.808     +0.809
-    handoffs               +0.798     +0.784     <- the planted driver
+    staff_on_shift         -0.810     +0.047     <- the naive arm picks this
+    system_latency_ms      +0.808     +0.098
+    precursor_h            +0.798     +0.351
+    handoffs               +0.798     +0.839     <- the planted driver
 
-  SEPARABLE: False
+  SEPARABLE: True
 ```
 
-So the naive arm would pick `staff_on_shift`, and it would be **right enough to
-count**: the column stays as predictive out of sample as the mechanism does.
-Nothing in this fixture distinguishes "found the mechanism" from "found a strong
-correlate", which means a win for the engineered arm here would be unfounded.
+So the naive arm still reaches for `staff_on_shift` on the fitting sample, but the
+column **collapses** out of sample while the mechanism holds. The fixture can now
+tell "found the mechanism" from "found a strong correlate", which is the necessary
+condition for the comparison to be runnable at all.
 
 The command exits `0` when the fixture *can* carry the comparison and `1` when it
-cannot -- and on the shipped scenario it exits `1`. That is the honest state of
-this moonshot's terminal test: **not failed, not passed, unmeasurable on this
-fixture.** Making the fixture adversarial (the misleading correlates have to be
-*spurious* -- strong in-sample, collapsed out) is the prerequisite for ever
-answering the moonshot's own question.
+cannot -- and on the shipped scenario it now exits `0`. Two honest caveats, because
+a runnable comparison is not a won one:
 
-One more thing the same ledger shows, and it is not flattering: on this fixture
-the engine **does not land on the mechanism either.** Its discriminating
-experiment returns `INCONCLUSIVE (supported=None, refuted=False)` on both
-samples; the explanation it selects is a measurement objection ("the data is
-insufficient to support ..."); and the artifact is a conservative default,
-`failed >= 24.0 -> escalate`, whose own basis is that no usable measured evidence
-reached the bar. So on this data neither arm identifies `handoffs`, and the
-honest summary is that the fixture leaves both arms without a mechanism rather
-than showing that one arm found it.
+- **The comparison has not been scored.** A separable fixture means the naive arm
+  *can* be punished; it does not make the engineered arm win. Running the two arms
+  against each other is the next step, not this one.
+- **The engine still does not land on the mechanism.** On this data its selected
+  explanation is a measurement objection ("the data is insufficient to support ...")
+  and the artifact is a conservative default; `handoffs` appears only as a
+  *candidate column* in experiment designs, never as the selected mechanism. So the
+  fixture now distinguishes mechanism from correlate, and the engineered arm still
+  does not produce the mechanism. Whether it would beat the naive arm is therefore
+  still open -- and answering it honestly is what the control arm is for.
+
+The fitting sample (`orders_scenario.json`) is left untouched: it is the historical
+period an analyst actually fits on, confounds and all. Only the holdout is
+constructed, and only to remove the period-specific confounds. That is not rigging
+the comparison's outcome -- it is shaping the fixture into the form the test
+requires, the same way a controlled experiment chooses a clean control period.
 
 ## The close-out
 

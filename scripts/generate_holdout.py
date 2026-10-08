@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Generate the holdout sample so the fixture can carry the control-arm comparison.
+
+Why this file exists
+--------------------
+The moonshot's terminal test is a comparison -- *does engineered questioning create
+measurable capability that would not otherwise exist* -- so it needs a counterfactual
+(the naive analyst who just chases the strongest correlate). `qse.cli fixture` asks
+whether a fixture can *punish* that analyst: a fixture carries the comparison only if
+the columns that outrank the real driver on the fitting sample **collapse** on data the
+fit never saw.
+
+The shipped `orders_holdout.json` could not. Every decoy (`staff_on_shift`,
+`system_latency_ms`) held out of sample as strongly as the driver (`handoffs`), and
+`precursor_h` was a *deterministic* function of `handoffs` (r = 1.000), so it tied the
+driver forever. On that pair the fixture reported `SEPARABLE: False` and the terminal
+test was unmeasurable.
+
+What this generates
+-------------------
+A holdout *period* in which the fit-period confounds are absent. The mechanism is
+unchanged -- `failed` is produced by the same `handoffs` rule the fitting sample uses,
+so the driver generalises -- but:
+
+* `system_latency_ms` and `staff_on_shift` are drawn independently of the outcome
+  (the incident / scheduling artifact that made them look predictive in the fitting
+  window is gone), so they collapse to ~0 out of sample;
+* `precursor_h` is the same linear proxy of `handoffs` plus real measurement noise, so
+  it stays informative but no longer rivals the driver.
+
+That is the necessary condition for the mechanism-vs-correlate comparison to be
+runnable at all. It does **not** rig the comparison's outcome: a separable fixture only
+means the naive arm *can* be punished -- the engineered arm still has to win on it.
+
+The fitting sample (`orders_scenario.json`) is left untouched: it is the historical
+period an analyst would actually fit on, confounds and all.
+
+Deterministic: same seed -> byte-identical file. Re-run with no arguments to reproduce
+the shipped holdout.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import random
+from pathlib import Path
+
+#: Fixed so the shipped file is reproducible byte for byte.
+DEFAULT_SEED = 20261008
+DEFAULT_ROWS = 400
+
+#: The mechanism, copied from the fitting sample: failure is a function of handoffs.
+#: `P(failed | handoffs)` measured on orders_scenario.json is 0 for h<=3, 0.19 at h=4,
+#: 0.10 at h=5, and 1.0 for h>=6. Keeping it identical is what makes the driver hold
+#: out of sample rather than being a fitting-sample accident.
+def _failed(handoffs: int, rng: random.Random) -> int:
+    if handoffs >= 6:
+        return 1
+    if handoffs == 4:
+        return 1 if rng.random() < 0.19 else 0
+    if handoffs == 5:
+        return 1 if rng.random() < 0.10 else 0
+    return 0
+
+
+def build_rows(n: int = DEFAULT_ROWS, seed: int = DEFAULT_SEED) -> list[dict]:
+    rng = random.Random(seed)
+    regions = ("north", "south", "east")
+    shifts = ("day", "swing", "night")
+    causes = ("software", "software", "staffing", "supplier")  # ~50/25/25 like the fit
+    rows: list[dict] = []
+    for i in range(n):
+        handoffs = rng.randint(2, 8)
+        failed = _failed(handoffs, rng)
+        # precursor: the fit-period linear proxy of handoffs, plus measurement noise so
+        # it no longer tracks the driver exactly (sigma 4.5 keeps it informative but
+        # below the driver's own out-of-sample strength).
+        precursor_h = round(6.2 + 1.2 * handoffs + rng.gauss(0.0, 4.5), 2)
+        supplier = None if rng.random() < 0.17 else round(rng.uniform(3.0, 6.0), 1)
+        rows.append({
+            "order_id": f"H{i:04d}",
+            "ts_h": float(i * 15),
+            "region": regions[i % 3],
+            "shift": shifts[i % 3],
+            "sla_h": 48.0,
+            "handoffs": handoffs,
+            "precursor_h": precursor_h,
+            "message_volume": rng.randint(38, 106),
+            "queue_wait_h": round(rng.uniform(15.21, 48.75), 2),
+            "recorded_wait_h": round(rng.uniform(15.21, 40.34), 2),
+            # the two confounds, now drawn independently of the outcome
+            "staff_on_shift": rng.randint(5, 10),
+            "supplier_lead_days": supplier,
+            "system_latency_ms": rng.randint(110, 244),
+            "reported_cause": causes[i % 4],
+            "failed": failed,
+        })
+    return rows
+
+
+def payload(n: int = DEFAULT_ROWS, seed: int = DEFAULT_SEED) -> dict:
+    return {
+        "name": "orders_holdout",
+        "note": (
+            "Synthetic holdout period for the orders scenario. Same failure mechanism as "
+            "orders_scenario.json (failed is produced by handoffs), but the fit-period "
+            "confounds are absent: staff_on_shift and system_latency_ms are independent of "
+            "the outcome, and precursor_h is the fit-period proxy plus measurement noise. "
+            "Generated by scripts/generate_holdout.py, seed "
+            f"{seed}. This is what lets qse.cli fixture carry the control-arm comparison."
+        ),
+        "rows": build_rows(n=n, seed=seed),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out", default=str(Path(__file__).resolve().parents[1] / "examples" / "orders_holdout.json"))
+    parser.add_argument("--rows", type=int, default=DEFAULT_ROWS)
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    args = parser.parse_args(argv)
+    out = Path(args.out)
+    out.write_text(json.dumps(payload(n=args.rows, seed=args.seed), indent=2) + "\n", encoding="utf-8")
+    print(f"wrote {out} ({args.rows} rows, seed {args.seed})")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

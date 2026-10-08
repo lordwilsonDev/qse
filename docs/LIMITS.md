@@ -153,39 +153,44 @@ there was no run. The reverse case is not caught: a ledger with exactly one
 trivial question would satisfy A17 without demonstrating anything. The list
 checks for the presence of a process, not for the process being hard.
 
-## The shipped fixture cannot measure the moonshot's own terminal test
+## The fixture can now carry the moonshot's terminal test -- but it has not been scored
 
 The terminal test -- *does engineered questioning create measurable capability
 that would not otherwise exist* -- is a comparison, so it needs a counterfactual.
 `qse.cli fixture` supplies the cheapest one (an analyst with no question
 engineering takes the top correlate) and asks whether this fixture can punish it.
 
-It cannot. Measured on the two shipped samples:
+It can now. The holdout is generated (`scripts/generate_holdout.py`) as a period in
+which the fitting-sample confounds are absent, so every column that outranks the
+driver on the fit collapses on data the fit never saw:
 
 ```text
-staff_on_shift    fit -0.810   holdout -0.791   <- the naive arm picks this
-system_latency_ms fit +0.808   holdout +0.809
-handoffs          fit +0.798   holdout +0.784   <- the planted driver
+staff_on_shift    fit -0.810   holdout +0.047   <- the naive arm picks this
+system_latency_ms fit +0.808   holdout +0.098
+precursor_h       fit +0.798   holdout +0.351
+handoffs          fit +0.798   holdout +0.839   <- the planted driver
 ```
 
-The columns the scenario calls misleading correlates are *not* misleading in the
-statistical sense: they are as predictive on data the fit never saw as the driver
-is. So the naive arm would be right enough to count, and any claim that the
-engineered arm did better on this fixture rests on nothing.
+`SEPARABLE: True`, exit 0. That is the necessary condition for the comparison to be
+runnable, and it is all it is: a separable fixture means the naive arm *can* be
+punished, not that the engineered arm wins. Scoring the two arms against each other
+on this fixture is the next step and **has not been done**.
 
-What this means concretely: the moonshot's headline question is **unmeasurable
-here**, not answered. A fixture can only carry the comparison if its decoys are
-*spurious* -- strong in-sample, collapsed out of sample -- and these are not.
+An earlier version of this file recorded the opposite result -- that the shipped
+pair was `SEPARABLE: False`, because the decoys held out of sample as strongly as
+the driver and `precursor_h` was a *deterministic* function of `handoffs`
+(r = 1.000) and so tied it forever. That was corrected by generating a holdout that
+removes the period-specific confounds, not by changing the audit.
 
-**And on the current code the engine does not land on a mechanism either.** Its
+**And on the current code the engine still does not land on a mechanism.** Its
 discriminating experiment returns `INCONCLUSIVE (supported=None, refuted=False)`
 on both datasets; the explanation it selects is a measurement objection
 (`MEASUREMENT`/`TELEMETRY` -- "the data is insufficient to support ..."); and the
-artifact it produces is a conservative default, `failed >= 24.0 -> escalate`,
-whose own stated basis is that no usable measured evidence reached the bar.
-`handoffs` appears in the ledger only as a *candidate column* in experiment
-designs and in the artifact's required-columns list -- never as the selected
-mechanism. Two explanations are left open as knowledge gaps.
+artifact it produces is a conservative default, whose own stated basis is that no
+usable measured evidence reached the bar. `handoffs` appears in the ledger only as
+a *candidate column* in experiment designs and in the artifact's required-columns
+list -- never as the selected mechanism. So the fixture now distinguishes mechanism
+from correlate, and the engineered arm still does not produce the mechanism.
 
 An earlier version of this file claimed "the engine does find the `handoffs`
 mechanism". That was true of an earlier controller and is **false of the code
@@ -199,12 +204,12 @@ that is exactly the kind a reader would trust without re-running.
 genuine Simpson flip; `supplier_lead_days` is missing for 17% of orders. None of
 that is disclosed to QSE.
 
-The correlated decoys were meant to be *misleading*, and measurably they are not:
-`system_latency_ms` and `staff_on_shift` are as predictive of the outcome on the
-holdout as `handoffs` is, so they are not decoys at all in the statistical sense
-(see "The shipped fixture cannot measure the moonshot's own terminal test"). What
-that means for this section: the generator's design intent is one claim, and what
-the numbers do is another, and only the second one is evidence.
+The correlated decoys are *misleading on the fitting period*: `system_latency_ms`
+and `staff_on_shift` outrank the driver there. They are spurious in the sense the
+comparison needs -- they collapse on the holdout, where the period-specific
+confound is absent (see "The fixture can now carry the moonshot's terminal test").
+The fitting sample is left as built; only the holdout is generated to remove the
+confound, and that generation is a construction, not a discovery.
 
 It is still a dataset a human built to be findable. Discovering structure in a
 table that was constructed to contain structure is a weaker result than
