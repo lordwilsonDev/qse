@@ -17,11 +17,11 @@ from .support import Workspace, pin_clock
 
 
 def _beat(path, index: int, *, boot: float = 500.0, watches=None, subject=None,
-          progress=None, effect=None) -> None:
+          progress=None, effect=None, effects=None) -> None:
     """A fully injected heartbeat, so a history can be replayed without waiting."""
     continuity.beat(path, wall=1_000.0 + index * 60.0, mono=index * 60.0,
                     boot=boot, pid=1, interval=60.0, watches=watches or {},
-                    subject=subject, progress=progress, effect=effect)
+                    subject=subject, progress=progress, effect=effect, effects=effects)
 
 
 class TheBeatLedger(unittest.TestCase):
@@ -376,6 +376,69 @@ class TheSideEffectWitness(unittest.TestCase):
     def test_a_non_numeric_effect_is_refused(self):
         with self.assertRaises(ValueError):
             continuity.beat(self.path, wall=1.0, effect="lots")
+
+
+class TheCorroborationOfSources(unittest.TestCase):
+    """Independence is counted, not asserted: a claim is only as strong as the sources."""
+
+    def setUp(self) -> None:
+        pin_clock()
+        self.ws = Workspace()
+        self.addCleanup(self.ws.close)
+        self.path = self.ws.ledger("w.jsonl")
+
+    def _run(self, declared, sources, **kw):
+        names = list(sources)
+        for i, decl in enumerate(declared):
+            _beat(self.path, i, progress=decl,
+                  effects={n: sources[n][i] for n in names})
+        return continuity.verify(self.path, sleeps=[], **kw)
+
+    def test_two_sources_that_agree_corroborate_the_advance(self):
+        report = self._run([1, 2, 3, 4], {"db_rows": [10, 20, 30, 40],
+                                          "files": [5, 6, 7, 8]}, stall_after=3)
+        self.assertEqual(report["effect_sources"], 2)
+        self.assertEqual(report["corroboration_counts"], {"CORROBORATION_CORROBORATED": 3})
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_an_advance_only_one_source_witnesses_is_uncorroborated(self):
+        report = self._run([1, 2, 3, 4], {"db_rows": [10, 20, 30, 40],
+                                          "files": [5, 5, 5, 5]}, stall_after=3)
+        self.assertEqual(report["corroboration_counts"], {"CORROBORATION_SINGLE_SOURCE": 3})
+        self.assertEqual(report["verdict"], "SUBJECT_UNCORROBORATED")
+
+    def test_sources_that_contradict_each_other_are_a_split(self):
+        report = self._run([1, 2, 3, 4], {"db_rows": [10, 20, 30, 40],
+                                          "files": [8, 7, 6, 5]}, stall_after=3)
+        self.assertEqual(report["corroboration_counts"], {"CORROBORATION_SPLIT": 3})
+        self.assertEqual(report["verdict"], "SUBJECT_WITNESSES_SPLIT")
+
+    def test_no_source_advancing_makes_a_claimed_advance_unsubstantiated(self):
+        # The subject claims an advance and none of the named sources moves: the claim is
+        # contradicted by every witness the record reads.
+        report = self._run([1, 2, 3, 4], {"db_rows": [5, 5, 5, 5],
+                                          "files": [9, 9, 9, 9]}, stall_after=3)
+        self.assertEqual(report["corroboration_counts"], {"CORROBORATION_NONE": 3})
+        self.assertEqual(report["verdict"], "SUBJECT_UNSUBSTANTIATED")
+
+    def test_a_single_source_ledger_does_not_engage_the_corroboration_verdicts(self):
+        # Backward compatibility: with one source read, an advancing subject keeps its
+        # existing reading; independence is simply not claimed either way.
+        report = self._run([1, 2, 3, 4], {"db_rows": [10, 20, 30, 40]}, stall_after=3)
+        self.assertEqual(report["effect_sources"], 1)
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+        self.assertEqual(report["uncorroborated"], [])
+
+    def test_a_single_source_is_not_uncorroborated_when_nothing_was_claimed(self):
+        # A flat counter with one source advancing is unclaimed work, not a false claim.
+        report = self._run([1, 1, 1, 1], {"db_rows": [10, 20, 30, 40],
+                                          "files": [5, 5, 5, 5]}, stall_after=3)
+        self.assertEqual(report["uncorroborated"], [])
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_a_non_numeric_named_source_is_refused(self):
+        with self.assertRaises(ValueError):
+            continuity.beat(self.path, wall=1.0, effects={"db_rows": "lots"})
 
 
 class ThePowerLogWitness(unittest.TestCase):

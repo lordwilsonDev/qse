@@ -126,6 +126,17 @@ So the inverse capability is:
   identity, now applied to advance. The second witness also *refutes a false stall*: a flat
   counter the observed effect contradicts is `EFFECT_UNREPORTED`, so the subject is silent
   rather than stalled, and the stall does not fire.
+- **Independence is counted, not asserted.** A single source can be moved by whoever
+  controls it, so the record reads *named* sources and reports how many agree: two or more
+  advancing together is `CORROBORATION_CORROBORATED` (a forgery would have to move them
+  together), one advancing alone is `CORROBORATION_SINGLE_SOURCE` (a real witness whose
+  independence is unestablished), sources that contradict each other are
+  `CORROBORATION_SPLIT`. A claimed advance sustained only by a lone source makes the verdict
+  `SUBJECT_UNCORROBORATED`; sources that contradict each other make `SUBJECT_WITNESSES_SPLIT`.
+  The record never says "independent" -- it says how many witnesses agree, so the reader
+  sees the strength of the evidence rather than a boolean the caller swore to. The verdicts
+  engage only when two or more sources are read, so a single-source record keeps its
+  existing reading.
 - **Absence is evidence.** A watched metric that never moved is computed and reported
   with the same standing a change would get, because "the disk did not fill" is exactly
   what a log of changes can never show.
@@ -153,6 +164,7 @@ $ python3 moonshot_machine.py
      injected: a new process, a new token    -> SUBJECT_RESTARTED
    progress (liveness is not advance): a flat counter -> SUBJECT_STALLED (3 flat beats, threshold 3); an advancing counter -> CONTINUOUS
    side effect (the counter vs the world): a real growing file -> CONTINUOUS; a claimed advance the world does not show -> SUBJECT_UNSUBSTANTIATED (3 beats); an unclaimed advance -> CONTINUOUS
+   corroboration (independence counted, not asserted): 2 sources agreeing -> CONTINUOUS; one source -> SUBJECT_UNCORROBORATED; sources that contradict -> SUBJECT_WITNESSES_SPLIT
    OS power witness: 0 sleep interval(s) in the log
 ```
 
@@ -195,22 +207,22 @@ Exit `0` when every demonstration holds, `1` when one does not, `2` for unusable
   the side-effect check compares it with whatever number the caller chose to read. Neither
   establishes that the number *is* the subject's real work. A side effect the subject also
   controls is not independent, and a subject that loops while incrementing a counter while
-  also touching the watched file would read as agreeing. Progress and its corroboration are
-  measured, not verified -- the reader must pick an effect the subject cannot forge.
+  also touching the watched file would read as agreeing. Corroboration raises the cost of a
+  forgery -- a second source must be moved consistently -- but it does not *prove*
+  independence: the record reports how many sources agree, not that they could not have been
+  moved together, and the choice of sources is still the caller's. Progress and its
+  corroboration are measured, not verified.
 
 ## Next question (the one the build produced)
 
-The side-effect witness closed the "the counter is only the subject's word" gap, but it
-opened the same one one level up: the recorder now *chooses* what to watch, and a watched
-number that the subject can also move is not independent at all -- a subject that
-increments its counter and touches its output file reads as `EFFECT_AGREES` whether or not
-any real work happened. So the next gap has the same shape as every one before it -- the
-witness still trusts a source it cannot prove is beyond the subject's reach. The next
-question is whether the record can **attest the independence of its own witnesses**: rather
-than the caller asserting "this file is beyond the subject's reach", can the recorder show
-*why* the observed effect could not have been produced by the subject alone -- a source it
-read but did not write, a value with a causal trail back to the work (a downstream
-consumer's count, a checksum of an artifact the subject cannot author), or two effects that
-would have to agree for a forgery to pass. That is the same move one more time: agreement
-is not enough; the record must show the witnesses are *independent*, and independence is
-the thing no report can simply assert.
+Corroboration counts agreement, which exposes the gap it did not close: **more agreeing
+sources are not more independent** ones. Two sources the same subject can move together are
+corroborated on paper and forged in practice, and the record cannot tell the difference --
+`CORROBORATION_CORROBORATED` reports *how many* agreed, never *whether they could have been
+made to*. The next question is whether the record can carry a reason that a source is
+beyond the subject's reach, rather than reading a number and trusting the caller: a source
+the recorder *read but did not write*; a value with a causal trail back to the work (a
+downstream consumer's count, a checksum the subject cannot author); or a pair of sources
+whose agreement implies something the subject cannot reproduce. That is the same move once
+more -- agreement is not independence, and independence is the thing no report can simply
+assert -- and it is the next inversion to build.

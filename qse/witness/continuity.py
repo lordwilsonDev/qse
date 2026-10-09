@@ -201,6 +201,54 @@ def classify_effect(previous: Mapping[str, Any], current: Mapping[str, Any]) -> 
     return {"kind": "EFFECT_AGREES", "declared": declared, "observed": observed,
             "why": "the claimed progress and the observed side effect did not diverge"}
 
+
+#: Corroboration: a claimed advance is only as strong as how many *named* sources agree
+#: about it. One source can be moved by whoever controls it; two sources that would have to
+#: advance together for a forgery to pass cost more to fake. The record does not *assert*
+#: that the sources are independent -- it counts how many advance together and names where
+#: they contradict, so the reader sees the strength of the evidence rather than a boolean
+#: the caller swore to.
+CORROBORATION_KINDS = ("CORROBORATION_CORROBORATED", "CORROBORATION_SINGLE_SOURCE",
+                       "CORROBORATION_SPLIT", "CORROBORATION_NONE")
+
+
+def effects_of(record: Mapping[str, Any]) -> dict[str, float]:
+    """The *named* side-effect sources the recorder read, as ``{name: value}``."""
+    raw = record.get("effects") or {}
+    out: dict[str, float] = {}
+    for name, value in raw.items():
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[str(name)] = float(value)
+    return out
+
+
+def corroborate(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dict[str, Any]:
+    """Compare the *named* effect sources across two beats and say how they agree.
+
+    * ``CORROBORATION_CORROBORATED`` -- two or more sources advanced and none regressed:
+      the advance is witnessed more than once, so a forgery would have to move them together.
+    * ``CORROBORATION_SINGLE_SOURCE`` -- exactly one source advanced: a real witness, but
+      its independence is unestablished.
+    * ``CORROBORATION_SPLIT`` -- some sources advanced while others went backwards: the
+      witnesses contradict each other about the world.
+    * ``CORROBORATION_NONE`` -- no source advanced (or none was read on both beats).
+    """
+    before, after = effects_of(previous), effects_of(current)
+    common = sorted(set(before) & set(after))
+    deltas = {name: round(after[name] - before[name], 6) for name in common}
+    advancing = [name for name in common if deltas[name] > 0]
+    regressed = [name for name in common if deltas[name] < 0]
+    if advancing and regressed:
+        kind = "CORROBORATION_SPLIT"
+    elif len(advancing) >= 2:
+        kind = "CORROBORATION_CORROBORATED"
+    elif advancing:
+        kind = "CORROBORATION_SINGLE_SOURCE"
+    else:
+        kind = "CORROBORATION_NONE"
+    return {"kind": kind, "sources": common, "deltas": deltas,
+            "advancing": advancing, "regressed": regressed}
+
 #: The fields of a subject identity that must not change across a restart. A pid can be
 #: reused; a start time cannot be reproduced by a new process, so both are kept.
 SUBJECT_FIELDS = ("name", "pid", "started")
@@ -239,6 +287,7 @@ def beat(
     subject: Mapping[str, Any] | None = None,
     progress: float | None = None,
     effect: float | None = None,
+    effects: Mapping[str, Any] | None = None,
     policy: str | None = None,
     interval: float = DEFAULT_INTERVAL,
     note: str = "",
@@ -261,11 +310,18 @@ def beat(
         raise ValueError(f"progress must be a number or None, got {type(progress).__name__}")
     if effect is not None and not isinstance(effect, (int, float)):
         raise ValueError(f"effect must be a number or None, got {type(effect).__name__}")
+    named: dict[str, float | None] = {}
+    for name, value in (effects or {}).items():
+        if value is not None and not isinstance(value, (int, float)):
+            raise ValueError(f"effect source {name!r} must be a number or None, got "
+                             f"{type(value).__name__}")
+        named[str(name)] = None if value is None else float(value)
     record = {
         "ev": BEAT,
         "subject": dict(subject) if subject else None,
         "progress": (None if progress is None else float(progress)),
         "effect": (None if effect is None else float(effect)),
+        "effects": named,
         "policy": (str(policy) if policy else None),
         "wall": round(float(time.time() if wall is None else wall), 6),
         "mono": round(float(time.monotonic() if mono is None else mono), 6),
@@ -458,6 +514,11 @@ def verify(
         "unsubstantiated": [],
         "longest_unsubstantiated": 0,
         "effect_witnesses": {},
+        "effect_sources": 0,
+        "corroboration_transitions": [],
+        "corroboration_counts": {},
+        "splits": [],
+        "uncorroborated": [],
         "power_sleeps": None,
         "verdict": "EMPTY",
     }
@@ -550,15 +611,42 @@ def verify(
         effect_counts[row["kind"]] = effect_counts.get(row["kind"], 0) + 1
     result["effect_counts"] = effect_counts
 
-    # A stall is now a claim the second witness can refute: a flat counter over the
-    # threshold counts only while the observed effect is *not* advancing. When the world
-    # shows work the subject did not report (EFFECT_UNREPORTED), the subject is silent, not
-    # stalled -- the two-witness rule catching a false stall as well as a false advance.
-    refuted = {"EFFECT_UNREPORTED"}
+    # Corroboration first: how many *named* sources agree about the advance. The record does
+    # not claim the sources are independent -- it counts the agreement and names the split,
+    # so a reader can tell an advance witnessed once from one witnessed many times. Only a
+    # ledger that reads two or more sources engages the corroboration verdicts, so a
+    # single-source record keeps its existing reading; independence is never silently
+    # awarded to one voice.
+    result["effect_sources"] = max((len(effects_of(b)) for b in beats), default=0)
+    multi = result["effect_sources"] >= 2
+    corr_rows = [corroborate(a, b) for a, b in zip(beats, beats[1:])]
+    result["corroboration_transitions"] = corr_rows
+    corr_counts: dict[str, int] = {}
+    for row in corr_rows:
+        corr_counts[row["kind"]] = corr_counts.get(row["kind"], 0) + 1
+    result["corroboration_counts"] = corr_counts
+
+    # Per interval: did the subject *claim* an advance, was any *observed* source present, and
+    # did any of them actually advance? The single effect and the named sources are counted
+    # together, so a stall or a false claim is refuted by whichever witness saw the work.
+    declared_advances = [row.get("delta", 0.0) > 0 for row in progress_rows]
+    observed_advances = [
+        bool(corr_rows[i]["advancing"]) or effect_rows[i].get("observed", 0.0) > 0
+        for i in range(len(effect_rows))
+    ]
+    observed_present = [
+        bool(corr_rows[i]["sources"])
+        or effect_of(beats[i]) is not None or effect_of(beats[i + 1]) is not None
+        for i in range(len(effect_rows))
+    ]
+
+    # A stall is a claim the other witnesses can refute: a flat counter counts only while no
+    # observed source advanced. When the world shows work the subject did not report, the
+    # subject is silent, not stalled -- the two-witness rule catching a false stall.
     runs: list[int] = []
     run = 0
-    for progress_row, effect_row in zip(progress_rows, effect_rows):
-        if progress_row["kind"] == "PROGRESS_FLAT" and effect_row["kind"] not in refuted:
+    for progress_row, advancing in zip(progress_rows, observed_advances):
+        if progress_row["kind"] == "PROGRESS_FLAT" and not advancing:
             run += 1
         else:
             if run:
@@ -575,11 +663,16 @@ def verify(
     ]
     result["regressions"] = [row for row in progress_rows if row["kind"] == "PROGRESS_REGRESSED"]
 
+    # A claimed advance no observed source supports. Counted only where a source exists and
+    # was read: with no side effect declared at all, the record says nothing rather than
+    # inventing a witness to contradict.
     unsubstantiated_runs: list[int] = []
     run = 0
-    for row in effect_rows:
-        if row["kind"] == "EFFECT_UNSUBSTANTIATED":
+    unsubstantiated = 0
+    for declared, present, advancing in zip(declared_advances, observed_present, observed_advances):
+        if declared and present and not advancing:
             run += 1
+            unsubstantiated += 1
         else:
             if run:
                 unsubstantiated_runs.append(run)
@@ -590,13 +683,48 @@ def verify(
     result["unsubstantiated"] = [
         {"beats": n,
          "why": f"the subject claimed an advance on {n} consecutive beats (threshold "
-                f"{stall_after}) that the observed side effect did not show"}
+                f"{stall_after}) no observed source showed"}
         for n in unsubstantiated_runs if n >= stall_after
     ]
     result["effect_witnesses"] = {
-        "unsubstantiated": effect_counts.get("EFFECT_UNSUBSTANTIATED", 0),
+        "unsubstantiated": unsubstantiated,
         "unreported": effect_counts.get("EFFECT_UNREPORTED", 0),
     }
+
+    # A split or a lone witness is reported only for a ledger that reads two or more sources.
+    split_runs: list[int] = []
+    uncorr_runs: list[int] = []
+    run_s = run_u = 0
+    for i, row in enumerate(corr_rows):
+        if multi and row["kind"] == "CORROBORATION_SPLIT":
+            run_s += 1
+        else:
+            if run_s:
+                split_runs.append(run_s)
+            run_s = 0
+        if multi and row["kind"] == "CORROBORATION_SINGLE_SOURCE" and declared_advances[i]:
+            run_u += 1
+        else:
+            if run_u:
+                uncorr_runs.append(run_u)
+            run_u = 0
+    if run_s:
+        split_runs.append(run_s)
+    if run_u:
+        uncorr_runs.append(run_u)
+    result["splits"] = [
+        {"beats": n,
+         "why": f"the named effect sources contradicted each other for {n} consecutive "
+                f"beats (threshold {stall_after}): some advanced while others went backwards"}
+        for n in split_runs if n >= stall_after
+    ]
+    result["uncorroborated"] = [
+        {"beats": n,
+         "why": f"the subject claimed an advance on {n} consecutive beats (threshold "
+                f"{stall_after}) that only one of {result['effect_sources']} named sources "
+                f"witnessed: a real advance, but its independence is unestablished"}
+        for n in uncorr_runs if n >= stall_after
+    ]
 
     if not beats:
         result["verdict"] = "EMPTY"
@@ -606,8 +734,12 @@ def verify(
         result["verdict"] = "SUBJECT_BROKE"
     elif result["regressions"]:
         result["verdict"] = "SUBJECT_BROKE"
+    elif result["splits"]:
+        result["verdict"] = "SUBJECT_WITNESSES_SPLIT"
     elif result["unsubstantiated"]:
         result["verdict"] = "SUBJECT_UNSUBSTANTIATED"
+    elif result["uncorroborated"]:
+        result["verdict"] = "SUBJECT_UNCORROBORATED"
     elif result["stalls"]:
         result["verdict"] = "SUBJECT_STALLED"
     else:

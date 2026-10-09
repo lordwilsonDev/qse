@@ -74,6 +74,13 @@ class TheMoonshotMachine(unittest.TestCase):
         self.assertEqual(eff["agrees_verdict"], "CONTINUOUS")
         self.assertEqual(eff["unsubstantiated_verdict"], "SUBJECT_UNSUBSTANTIATED")
         self.assertEqual(eff["unreported_verdict"], "CONTINUOUS")
+        # Independence counted, not asserted: two sources that agree corroborate, one source
+        # is uncorroborated, and sources that contradict each other are a split.
+        co = payload["demo"]["corroboration"]
+        self.assertEqual(co["corroborated_verdict"], "CONTINUOUS")
+        self.assertEqual(co["corroborated_sources"], 2)
+        self.assertEqual(co["uncorroborated_verdict"], "SUBJECT_UNCORROBORATED")
+        self.assertEqual(co["split_verdict"], "SUBJECT_WITNESSES_SPLIT")
 
     def test_the_page_names_the_moonshot_and_its_verdict(self):
         out = io.StringIO()
@@ -86,6 +93,8 @@ class TheMoonshotMachine(unittest.TestCase):
         self.assertIn("SUBJECT_BROKE", page)
         self.assertIn("SUBJECT_STALLED", page)
         self.assertIn("SUBJECT_UNSUBSTANTIATED", page)
+        self.assertIn("SUBJECT_UNCORROBORATED", page)
+        self.assertIn("SUBJECT_WITNESSES_SPLIT", page)
 
 
 if __name__ == "__main__":  # pragma: no cover

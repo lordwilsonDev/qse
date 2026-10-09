@@ -281,6 +281,33 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
         _effect_ledger("unreported.jsonl", [1, 1, 1, 1], [10, 20, 30, 40]),
         sleeps=[], stall_after=3)  # the world advances; the subject says nothing
 
+    # Independence, not asserted but counted: with two named sources, an advance they both
+    # witness is corroborated, one only a single source witnesses is not, and sources that
+    # contradict each other are a split. Two sources cost more to forge than one, so the
+    # record names how much agreement backs the claim instead of awarding one voice.
+    def _corroboration_ledger(name: str, declared: list[float],
+                              sources: dict[str, list[float]]) -> str:
+        path = str(directory / name)
+        names = list(sources)
+        for i in range(len(declared)):
+            continuity.beat(path, wall=1_000.0 + i * 60.0, mono=i * 60.0, boot=500.0,
+                            pid=1, interval=60.0, progress=declared[i],
+                            effects={n: sources[n][i] for n in names})
+        return path
+
+    corroborated = continuity.verify(
+        _corroboration_ledger("corroborated.jsonl", [1, 2, 3, 4],
+                              {"db_rows": [10, 20, 30, 40], "files": [5, 6, 7, 8]}),
+        sleeps=[], stall_after=3)
+    uncorroborated = continuity.verify(
+        _corroboration_ledger("uncorroborated.jsonl", [1, 2, 3, 4],
+                              {"db_rows": [10, 20, 30, 40], "files": [5, 5, 5, 5]}),
+        sleeps=[], stall_after=3)
+    witnesses_split = continuity.verify(
+        _corroboration_ledger("split.jsonl", [1, 2, 3, 4],
+                              {"db_rows": [10, 20, 30, 40], "files": [8, 7, 6, 5]}),
+        sleeps=[], stall_after=3)
+
     return {
         "real": {"ledger": real, "verdict": report["verdict"], "beats": report["beats"],
                  "chain_ok": report["chain_ok"], "counts": report["counts"],
@@ -304,6 +331,10 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
                    "unsubstantiated_verdict": unsubstantiated["verdict"],
                    "unsubstantiated_beats": unsubstantiated["longest_unsubstantiated"],
                    "unreported_verdict": unreported["verdict"]},
+        "corroboration": {"corroborated_verdict": corroborated["verdict"],
+                          "corroborated_sources": corroborated["effect_sources"],
+                          "uncorroborated_verdict": uncorroborated["verdict"],
+                          "split_verdict": witnesses_split["verdict"]},
         "absences": continuity.absences(real),
         "power_sleeps_recorded": len(power.load()),
     }
@@ -333,7 +364,10 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
           and demo["progress"]["advancing_verdict"] == "CONTINUOUS"
           and demo["effect"]["agrees_verdict"] == "CONTINUOUS"
           and demo["effect"]["unsubstantiated_verdict"] == "SUBJECT_UNSUBSTANTIATED"
-          and demo["effect"]["unreported_verdict"] == "CONTINUOUS")
+          and demo["effect"]["unreported_verdict"] == "CONTINUOUS"
+          and demo["corroboration"]["corroborated_verdict"] == "CONTINUOUS"
+          and demo["corroboration"]["uncorroborated_verdict"] == "SUBJECT_UNCORROBORATED"
+          and demo["corroboration"]["split_verdict"] == "SUBJECT_WITNESSES_SPLIT")
 
     lines: list[str] = []
     lines.append("MOONSHOT-M  the machine that can attest its own continuity")
@@ -386,7 +420,11 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
     lines.append("   the world, not only reported: the subject's counter is compared with a side")
     lines.append("   effect the recorder reads for itself (a file it grows), so a claimed advance")
     lines.append("   nothing substantiates is reported SUBJECT_UNSUBSTANTIATED -- the same")
-    lines.append("   two-witness pattern, now applied to advance rather than identity.")
+    lines.append("   two-witness pattern, now applied to advance rather than identity. And")
+    lines.append("   independence is not asserted but counted: with more than one named source,")
+    lines.append("   an advance they all witness is corroborated, one only a single source")
+    lines.append("   witnesses is SUBJECT_UNCORROBORATED, and sources that contradict each other")
+    lines.append("   are SUBJECT_WITNESSES_SPLIT -- one voice is never awarded independence.")
     lines.append("")
 
     lines.append("4. THE WITNESS, RUN")
@@ -421,6 +459,11 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
                  f"{ef['agrees_verdict']}; a claimed advance the world does not show -> "
                  f"{ef['unsubstantiated_verdict']} ({ef['unsubstantiated_beats']} beats); "
                  f"an unclaimed advance -> {ef['unreported_verdict']}")
+    co = demo["corroboration"]
+    lines.append(f"   corroboration (independence counted, not asserted): {co['corroborated_sources']} "
+                 f"sources agreeing -> {co['corroborated_verdict']}; one source -> "
+                 f"{co['uncorroborated_verdict']}; sources that contradict -> "
+                 f"{co['split_verdict']}")
     lines.append("   absences (what did not change):")
     for row in demo["absences"]:
         state = "held steady" if not row["changed"] else "changed"
