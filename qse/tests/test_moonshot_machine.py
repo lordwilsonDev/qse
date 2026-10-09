@@ -81,6 +81,13 @@ class TheMoonshotMachine(unittest.TestCase):
         self.assertEqual(co["corroborated_sources"], 2)
         self.assertEqual(co["uncorroborated_verdict"], "SUBJECT_UNCORROBORATED")
         self.assertEqual(co["split_verdict"], "SUBJECT_WITNESSES_SPLIT")
+        # One level deeper: agreement is not independence. The same corroborated ledger
+        # is independent only when its sources declare a reason they are beyond reach.
+        ind = payload["demo"]["independence"]
+        self.assertEqual(ind["independent_verdict"], "CONTINUOUS")
+        self.assertEqual(ind["independent_sources"], ["db_rows", "files"])
+        self.assertEqual(ind["unproven_verdict"], "SUBJECT_INDEPENDENCE_UNPROVEN")
+        self.assertEqual(ind["unproven_sources"], [])
 
     def test_the_page_names_the_moonshot_and_its_verdict(self):
         out = io.StringIO()
@@ -95,6 +102,7 @@ class TheMoonshotMachine(unittest.TestCase):
         self.assertIn("SUBJECT_UNSUBSTANTIATED", page)
         self.assertIn("SUBJECT_UNCORROBORATED", page)
         self.assertIn("SUBJECT_WITNESSES_SPLIT", page)
+        self.assertIn("SUBJECT_INDEPENDENCE_UNPROVEN", page)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -137,6 +137,20 @@ So the inverse capability is:
   sees the strength of the evidence rather than a boolean the caller swore to. The verdicts
   engage only when two or more sources are read, so a single-source record keeps its
   existing reading.
+- **Agreement is not independence -- a declaration is recorded, never promoted to proof.**
+  Corroboration counts how many named sources agree; it cannot tell two sources the subject
+  could write from two it cannot. So each source may *declare* a provenance -- the reason it
+  is beyond the subject's reach: `read_only` (the recorder read it and had no write path),
+  `causal` (a trail back to the work, e.g. a downstream consumer's count), `external`
+  (outside the subject's machine), or `within` (the subject's own counter, declared rather
+  than hidden). The verifier counts the *advancing* sources declared beyond reach: two or
+  more is `INDEPENDENCE_INDEPENDENT`, one alone is `INDEPENDENCE_DECLARED_ONLY`, and two or
+  more agreeing sources with fewer than two beyond reach is `INDEPENDENCE_UNPROVEN` --
+  sustained over the threshold it makes the verdict `SUBJECT_INDEPENDENCE_UNPROVEN`. A
+  corroborated advance is therefore never called independent on agreement alone; the
+  strongest verdict the evidence reaches when independence is merely declared is *unproven*.
+  A ledger that declares no provenance keeps its earlier reading, an unrecognised
+  declaration is ignored, and an unknown provenance kind is refused rather than believed.
 - **Absence is evidence.** A watched metric that never moved is computed and reported
   with the same standing a change would get, because "the disk did not fill" is exactly
   what a log of changes can never show.
@@ -164,7 +178,8 @@ $ python3 moonshot_machine.py
      injected: a new process, a new token    -> SUBJECT_RESTARTED
    progress (liveness is not advance): a flat counter -> SUBJECT_STALLED (3 flat beats, threshold 3); an advancing counter -> CONTINUOUS
    side effect (the counter vs the world): a real growing file -> CONTINUOUS; a claimed advance the world does not show -> SUBJECT_UNSUBSTANTIATED (3 beats); an unclaimed advance -> CONTINUOUS
-   corroboration (independence counted, not asserted): 2 sources agreeing -> CONTINUOUS; one source -> SUBJECT_UNCORROBORATED; sources that contradict -> SUBJECT_WITNESSES_SPLIT
+   corroboration (agreement counted, not asserted): 2 sources agreeing -> CONTINUOUS; one source -> SUBJECT_UNCORROBORATED; sources that contradict -> SUBJECT_WITNESSES_SPLIT
+   independence (agreement is not independence): 2 source(s) declared beyond reach -> CONTINUOUS; the same agreement with every source within reach -> SUBJECT_INDEPENDENCE_UNPROVEN
    OS power witness: 0 sleep interval(s) in the log
 ```
 
@@ -211,18 +226,23 @@ Exit `0` when every demonstration holds, `1` when one does not, `2` for unusable
   forgery -- a second source must be moved consistently -- but it does not *prove*
   independence: the record reports how many sources agree, not that they could not have been
   moved together, and the choice of sources is still the caller's. Progress and its
-  corroboration are measured, not verified.
+  corroboration are measured, not verified. Independence is now *declared and counted*, but
+  the declaration is the caller's and is never checked: a caller who marks a source
+  `read_only` when the subject can write it defeats the check, and the strongest word the
+  record uses is `SUBJECT_INDEPENDENCE_UNPROVEN`, never "independence proven" -- it can
+  withhold credit for independence, never manufacture it.
 
 ## Next question (the one the build produced)
 
-Corroboration counts agreement, which exposes the gap it did not close: **more agreeing
-sources are not more independent** ones. Two sources the same subject can move together are
-corroborated on paper and forged in practice, and the record cannot tell the difference --
-`CORROBORATION_CORROBORATED` reports *how many* agreed, never *whether they could have been
-made to*. The next question is whether the record can carry a reason that a source is
-beyond the subject's reach, rather than reading a number and trusting the caller: a source
-the recorder *read but did not write*; a value with a causal trail back to the work (a
-downstream consumer's count, a checksum the subject cannot author); or a pair of sources
-whose agreement implies something the subject cannot reproduce. That is the same move once
-more -- agreement is not independence, and independence is the thing no report can simply
-assert -- and it is the next inversion to build.
+The vulnerable edge has moved, not closed. The record can now tell agreement from
+independence, but only because a caller *declares* why a source is out of reach -- and a
+declaration is exactly the kind of thing this moonshot refuses to take on faith elsewhere.
+`INDEPENDENCE_INDEPENDENT` still means "two sources said they were beyond reach and agreed",
+not "two sources provably were". The next question is whether a declaration of reach can be
+made *checkable* rather than told: a source whose ownership, permissions, or filesystem
+the recorder can read for itself (so `read_only` becomes observed, not asserted); a value
+whose causal trail back to the work the recorder can walk (a downstream consumer's count it
+can reach and the subject cannot); or the wall/monotonic clock divergence used as a third
+witness so a *frozen* process is caught, not only a stopped one. The same move once more --
+the strongest claim is the one the record can *falsify* about itself, and independence is
+still the thing no report can simply assert.

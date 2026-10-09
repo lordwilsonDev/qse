@@ -122,8 +122,13 @@ misread as a stall), and the same two-witness pattern applied to identity is app
 advance. Independence itself is **counted, not asserted**: the record reads named sources
 and reports how many agree -- two or more advancing is corroborated, one alone is
 `SUBJECT_UNCORROBORATED`, sources that contradict each other are `SUBJECT_WITNESSES_SPLIT`
--- so it never says "independent", only how many witnesses back the claim. The full
-inversions and the honest limits are in [docs/moonshot-m.md](docs/moonshot-m.md).
+-- so it never says "independent", only how many witnesses back the claim. And agreement
+is not independence: each source may **declare why it is beyond the subject's reach**
+(`read_only` / `causal` / `external` / `within`), and the record counts the agreeing
+sources declared beyond reach -- two or more is independent, two-or-more agreeing with
+fewer than two beyond reach is `SUBJECT_INDEPENDENCE_UNPROVEN`, so the strongest verdict a
+*declaration* can reach is "unproven", never a silent pass. The full inversions and the
+honest limits are in [docs/moonshot-m.md](docs/moonshot-m.md).
 
 ## MOONSHOT-C — the same test on a cloud bill, in one script
 
@@ -284,7 +289,7 @@ cd ~/projects/qse
 python3 -B -W error::ResourceWarning -m unittest discover -s qse/tests -t .
 ```
 
-406 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
+414 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
 resolves) and so does `-B` (bytecode caches left in the tree are noise).
 
 ## The seven slots
@@ -334,7 +339,7 @@ qse/control/        replayable state, policy, information gain, the controller
 qse/ledger/         hash-chained JSONL events, receipts, the "why" reconstruction
 qse/metrics/        QBY, BSR, EC, BC, VI, OC
 qse/cloud/          the MOONSHOT-C synthetic cloud fixture (scenario.py)
-qse/witness/        MOONSHOT-M: the continuity ledger, OS power-log witness, progress, side-effect + corroboration checks
+qse/witness/        MOONSHOT-M: the continuity ledger, OS power-log witness, progress, side-effect, corroboration + independence checks
 qse/cli.py          the command line
 moonshot_cloud.py   MOONSHOT-C: the same terminal comparison, on a cloud bill, in one command
 moonshot_machine.py MOONSHOT-M: invert a machine's axioms and build the witness, in one command

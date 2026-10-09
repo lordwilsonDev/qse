@@ -17,11 +17,12 @@ from .support import Workspace, pin_clock
 
 
 def _beat(path, index: int, *, boot: float = 500.0, watches=None, subject=None,
-          progress=None, effect=None, effects=None) -> None:
+          progress=None, effect=None, effects=None, provenance=None) -> None:
     """A fully injected heartbeat, so a history can be replayed without waiting."""
     continuity.beat(path, wall=1_000.0 + index * 60.0, mono=index * 60.0,
                     boot=boot, pid=1, interval=60.0, watches=watches or {},
-                    subject=subject, progress=progress, effect=effect, effects=effects)
+                    subject=subject, progress=progress, effect=effect, effects=effects,
+                    provenance=provenance)
 
 
 class TheBeatLedger(unittest.TestCase):
@@ -439,6 +440,82 @@ class TheCorroborationOfSources(unittest.TestCase):
     def test_a_non_numeric_named_source_is_refused(self):
         with self.assertRaises(ValueError):
             continuity.beat(self.path, wall=1.0, effects={"db_rows": "lots"})
+
+
+class TheIndependenceOfWitnesses(unittest.TestCase):
+    """Agreement is not independence: count *why* a source is out of the subject's reach."""
+
+    def setUp(self) -> None:
+        pin_clock()
+        self.ws = Workspace()
+        self.addCleanup(self.ws.close)
+        self.path = self.ws.ledger("w.jsonl")
+
+    def _run(self, declared, sources, provenance, **kw):
+        names = list(sources)
+        for i, decl in enumerate(declared):
+            _beat(self.path, i, progress=decl,
+                  effects={n: sources[n][i] for n in names}, provenance=provenance)
+        return continuity.verify(self.path, sleeps=[], **kw)
+
+    def test_two_sources_declared_beyond_reach_are_independent(self):
+        report = self._run([1, 2, 3, 4], {"db_rows": [10, 20, 30, 40],
+                                          "files": [5, 6, 7, 8]},
+                           {"db_rows": "read_only", "files": "causal"}, stall_after=3)
+        self.assertEqual(report["independence_counts"], {"INDEPENDENCE_INDEPENDENT": 3})
+        self.assertEqual(report["independent_sources"], ["db_rows", "files"])
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_two_agreeing_sources_all_within_reach_leave_independence_unproven(self):
+        report = self._run([1, 2, 3, 4], {"db_rows": [10, 20, 30, 40],
+                                          "files": [5, 6, 7, 8]},
+                           {"db_rows": "within", "files": "within"}, stall_after=3)
+        self.assertEqual(report["independence_counts"], {"INDEPENDENCE_UNPROVEN": 3})
+        self.assertEqual(report["independent_sources"], [])
+        self.assertEqual(report["verdict"], "SUBJECT_INDEPENDENCE_UNPROVEN")
+
+    def test_one_beyond_reach_source_among_two_is_still_unproven(self):
+        report = self._run([1, 2, 3, 4], {"db_rows": [10, 20, 30, 40],
+                                          "files": [5, 6, 7, 8]},
+                           {"db_rows": "read_only", "files": "within"}, stall_after=3)
+        self.assertEqual(report["independence_counts"], {"INDEPENDENCE_UNPROVEN": 3})
+        self.assertEqual(report["verdict"], "SUBJECT_INDEPENDENCE_UNPROVEN")
+
+    def test_a_lone_beyond_reach_source_is_declared_only_not_independent(self):
+        report = self._run([1, 2, 3, 4], {"db_rows": [10, 20, 30, 40]},
+                           {"db_rows": "read_only"}, stall_after=3)
+        self.assertEqual(report["independence_counts"], {"INDEPENDENCE_DECLARED_ONLY": 3})
+        self.assertEqual(report["effect_sources"], 1)
+        # One voice is never awarded independence, however it is declared.
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+        self.assertEqual(report["unproven_independence"], [])
+
+    def test_a_ledger_that_declares_no_provenance_keeps_its_prior_reading(self):
+        # Backward compatibility: without any declaration, independence is neither claimed
+        # nor withheld -- the corroboration reading stands.
+        report = self._run([1, 2, 3, 4], {"db_rows": [10, 20, 30, 40],
+                                          "files": [5, 6, 7, 8]}, {}, stall_after=3)
+        self.assertEqual(report["independent_sources"], [])
+        self.assertEqual(report["unproven_independence"], [])
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_independence_separates_beyond_reach_from_within(self):
+        prev = {"effects": {"a": 1.0, "b": 1.0},
+                "provenance": {"a": "read_only", "b": "within"}}
+        cur = {"effects": {"a": 2.0, "b": 2.0}}
+        row = continuity.independence(prev, cur)
+        self.assertEqual(row["beyond"], ["a"])
+        self.assertEqual(row["within"], ["b"])
+        self.assertEqual(row["undeclared"], [])
+
+    def test_provenance_of_ignores_an_unrecognised_kind(self):
+        self.assertEqual(
+            continuity.provenance_of({"provenance": {"a": "read_only", "b": "sworn"}}),
+            {"a": "read_only"})
+
+    def test_an_unknown_provenance_is_refused_at_write_time(self):
+        with self.assertRaises(ValueError):
+            continuity.beat(self.path, wall=1.0, effects={"a": 1}, provenance={"a": "sworn"})
 
 
 class ThePowerLogWitness(unittest.TestCase):

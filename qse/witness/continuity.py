@@ -249,6 +249,95 @@ def corroborate(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dict
     return {"kind": kind, "sources": common, "deltas": deltas,
             "advancing": advancing, "regressed": regressed}
 
+
+#: Independence: a claimed advance is only as strong as *why* a witness is beyond the
+#: subject's reach. ``corroborate`` counts how many named sources agree about an advance;
+#: it cannot tell two sources the subject writes from two it merely reads. So each source
+#: may *declare* a provenance -- the reason it is outside the subject's control -- and the
+#: record counts only those that carry one, separate from the count of agreeing voices. The
+#: declaration is the caller's, and the ledger never promotes it to proof: an advance whose
+#: agreeing sources are all within reach is reported as independence *unproven*, not as
+#: attested. The next inversion of MOONSHOT-M, one level deeper than corroboration.
+#:
+#: * ``read_only`` -- the recorder read the source and has no write path to it (a file it
+#:   only stats, a socket it only reads).
+#: * ``causal`` -- the value bears a causal trail back to the work (a downstream consumer's
+#:   count, a checksum the subject cannot author).
+#: * ``external`` -- the value lives outside the subject's machine (a third party's record).
+#: * ``within`` -- the subject's own counter, in its reach; declared rather than hidden.
+PROVENANCE_KINDS = ("read_only", "causal", "external", "within")
+
+#: The declared provenances that mean a source is *beyond the subject's reach*. Kept as a
+#: tuple of reasons rather than a boolean so a reader sees *why*, not just *that*.
+BEYOND_REACH = ("read_only", "causal", "external")
+
+#: Whether a claimed advance is backed by witnesses beyond the subject's reach. Distinct
+#: from ``CORROBORATION_KINDS``: agreement is not independence, and this vocabulary is
+#: deliberately weaker -- it can report INDEPENDENT, but the strongest verdict a ledger
+#: reaches when independence is *not* declared is UNPROVEN, never a silent pass.
+INDEPENDENCE_KINDS = ("INDEPENDENCE_INDEPENDENT", "INDEPENDENCE_DECLARED_ONLY",
+                      "INDEPENDENCE_UNPROVEN", "INDEPENDENCE_NONE")
+
+
+def provenance_of(record: Mapping[str, Any]) -> dict[str, str]:
+    """The provenance each named source *declared*, as ``{name: kind}``.
+
+    Only declared kinds drawn from ``PROVENANCE_KINDS`` are kept, so a malformed or
+    unrecognised declaration is ignored rather than believed -- the same rule the rest of
+    the record applies to anything it cannot check.
+    """
+    raw = record.get("provenance") or {}
+    out: dict[str, str] = {}
+    for name, kind in raw.items():
+        if isinstance(kind, str) and kind in PROVENANCE_KINDS:
+            out[str(name)] = kind
+    return out
+
+
+def _source_provenance(previous: Mapping[str, Any], current: Mapping[str, Any],
+                       name: str) -> str | None:
+    """A source's declared provenance, taken from the later beat that declared one."""
+    return provenance_of(current).get(name) or provenance_of(previous).get(name)
+
+
+def independence(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dict[str, Any]:
+    """Count how many *advancing* sources are declared beyond the subject's reach.
+
+    The counterpart to ``corroborate``: that function counts agreement, this one counts the
+    reasons the agreeing sources could not all have been moved by the subject. A source with
+    no declaration is credited to none of the reach classes -- the record reports
+    independence as unproven rather than silently letting agreement stand in for it.
+
+    * ``INDEPENDENCE_INDEPENDENT`` -- two or more beyond-reach sources advanced.
+    * ``INDEPENDENCE_UNPROVEN`` -- two or more sources advanced, but fewer than two are
+      declared beyond reach: agreement counted, independence not established.
+    * ``INDEPENDENCE_DECLARED_ONLY`` -- exactly one source advanced and it is declared
+      beyond reach: a real reason, but only one such witness.
+    * ``INDEPENDENCE_NONE`` -- nothing advanced, or the sources contradicted each other.
+    """
+    before, after = effects_of(previous), effects_of(current)
+    common = sorted(set(before) & set(after))
+    deltas = {name: round(after[name] - before[name], 6) for name in common}
+    advancing = [name for name in common if deltas[name] > 0]
+    regressed = [name for name in common if deltas[name] < 0]
+    declared = {name: _source_provenance(previous, current, name) for name in common}
+    beyond = [name for name in advancing if declared.get(name) in BEYOND_REACH]
+    within = [name for name in advancing if declared.get(name) == "within"]
+    undeclared = [name for name in advancing if declared.get(name) is None]
+    if advancing and regressed:
+        kind = "INDEPENDENCE_NONE"
+    elif len(beyond) >= 2:
+        kind = "INDEPENDENCE_INDEPENDENT"
+    elif len(advancing) >= 2:
+        kind = "INDEPENDENCE_UNPROVEN"
+    elif beyond:
+        kind = "INDEPENDENCE_DECLARED_ONLY"
+    else:
+        kind = "INDEPENDENCE_NONE"
+    return {"kind": kind, "sources": common, "deltas": deltas, "declared": declared,
+            "advancing": advancing, "regressed": regressed, "beyond": beyond,
+            "within": within, "undeclared": undeclared}
+
 #: The fields of a subject identity that must not change across a restart. A pid can be
 #: reused; a start time cannot be reproduced by a new process, so both are kept.
 SUBJECT_FIELDS = ("name", "pid", "started")
@@ -288,6 +377,7 @@ def beat(
     progress: float | None = None,
     effect: float | None = None,
     effects: Mapping[str, Any] | None = None,
+    provenance: Mapping[str, Any] | None = None,
     policy: str | None = None,
     interval: float = DEFAULT_INTERVAL,
     note: str = "",
@@ -303,6 +393,11 @@ def beat(
     service, a process (``subject_identity`` reads one from the OS). Recorded at every
     beat rather than once, because a subject that dies and returns is only visible as a
     change across beats; compare with ``classify_subject``.
+
+    ``provenance`` declares, per named effect source, *why* that source is beyond the
+    subject's reach (``PROVENANCE_KINDS``). It is recorded, never proven: ``independence``
+    counts the declarations so a reader can tell agreement from independence, and a source
+    left undeclared is reported as such rather than quietly credited.
     """
     if policy is not None and policy not in POLICIES:
         raise ValueError(f"unknown subject policy {policy!r}; choose from {POLICIES}")
@@ -316,12 +411,19 @@ def beat(
             raise ValueError(f"effect source {name!r} must be a number or None, got "
                              f"{type(value).__name__}")
         named[str(name)] = None if value is None else float(value)
+    declared: dict[str, str] = {}
+    for name, kind in (provenance or {}).items():
+        if not isinstance(kind, str) or kind not in PROVENANCE_KINDS:
+            raise ValueError(f"unknown provenance for effect source {name!r}: {kind!r}; "
+                             f"choose from {PROVENANCE_KINDS}")
+        declared[str(name)] = kind
     record = {
         "ev": BEAT,
         "subject": dict(subject) if subject else None,
         "progress": (None if progress is None else float(progress)),
         "effect": (None if effect is None else float(effect)),
         "effects": named,
+        "provenance": declared,
         "policy": (str(policy) if policy else None),
         "wall": round(float(time.time() if wall is None else wall), 6),
         "mono": round(float(time.monotonic() if mono is None else mono), 6),
@@ -519,6 +621,11 @@ def verify(
         "corroboration_counts": {},
         "splits": [],
         "uncorroborated": [],
+        "independence_transitions": [],
+        "independence_counts": {},
+        "effect_provenance": {},
+        "independent_sources": [],
+        "unproven_independence": [],
         "power_sleeps": None,
         "verdict": "EMPTY",
     }
@@ -626,6 +733,26 @@ def verify(
         corr_counts[row["kind"]] = corr_counts.get(row["kind"], 0) + 1
     result["corroboration_counts"] = corr_counts
 
+    # Independence one level deeper than corroboration: of the sources that agree, how many
+    # are declared *beyond the subject's reach*? Agreement is not independence, so this is
+    # counted separately and only engaged when provenance was declared at all -- a record
+    # that never claimed to know why its sources are out of reach keeps its prior reading
+    # rather than being credited or penalised for a declaration it never made.
+    prov_map: dict[str, str] = {}
+    for b in beats:
+        prov_map.update(provenance_of(b))
+    result["effect_provenance"] = prov_map
+    result["independent_sources"] = sorted(
+        name for name, kind in prov_map.items() if kind in BEYOND_REACH
+    )
+    indep_rows = [independence(a, b) for a, b in zip(beats, beats[1:])]
+    result["independence_transitions"] = indep_rows
+    indep_counts: dict[str, int] = {}
+    for row in indep_rows:
+        indep_counts[row["kind"]] = indep_counts.get(row["kind"], 0) + 1
+    result["independence_counts"] = indep_counts
+    prov_engaged = multi and bool(prov_map)
+
     # Per interval: did the subject *claim* an advance, was any *observed* source present, and
     # did any of them actually advance? The single effect and the named sources are counted
     # together, so a stall or a false claim is refuted by whichever witness saw the work.
@@ -726,6 +853,31 @@ def verify(
         for n in uncorr_runs if n >= stall_after
     ]
 
+    # Agreement that is not independence. A sustained run of corroborated advances whose
+    # sources are not declared beyond the subject's reach is reported apart from a split or
+    # a lone witness: the sources agree, but nothing says the subject could not have moved
+    # them together. The record says "unproven", not "independent" -- and a ledger that
+    # declared no provenance keeps its prior reading rather than being penalised for it.
+    unproven_runs: list[int] = []
+    run_p = 0
+    for i, row in enumerate(indep_rows):
+        if prov_engaged and row["kind"] == "INDEPENDENCE_UNPROVEN" and declared_advances[i]:
+            run_p += 1
+        else:
+            if run_p:
+                unproven_runs.append(run_p)
+            run_p = 0
+    if run_p:
+        unproven_runs.append(run_p)
+    result["unproven_independence"] = [
+        {"beats": n,
+         "why": f"the subject claimed an advance on {n} consecutive beats (threshold "
+                f"{stall_after}) that {result['effect_sources']} named sources corroborated "
+                f"but only {len(result['independent_sources'])} were declared beyond the "
+                f"subject's reach: agreement is not independence"}
+        for n in unproven_runs if n >= stall_after
+    ]
+
     if not beats:
         result["verdict"] = "EMPTY"
     elif result["lost"]:
@@ -740,6 +892,8 @@ def verify(
         result["verdict"] = "SUBJECT_UNSUBSTANTIATED"
     elif result["uncorroborated"]:
         result["verdict"] = "SUBJECT_UNCORROBORATED"
+    elif result["unproven_independence"]:
+        result["verdict"] = "SUBJECT_INDEPENDENCE_UNPROVEN"
     elif result["stalls"]:
         result["verdict"] = "SUBJECT_STALLED"
     else:

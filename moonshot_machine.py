@@ -308,6 +308,34 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
                               {"db_rows": [10, 20, 30, 40], "files": [8, 7, 6, 5]}),
         sleeps=[], stall_after=3)
 
+    # Independence, one level deeper than corroboration: of the sources that agree about an
+    # advance, how many are *declared* beyond the subject's reach? Two sources the subject
+    # could both write agree as easily as two it cannot, so agreement alone is reported as
+    # SUBJECT_INDEPENDENCE_UNPROVEN until a reason is declared -- and the reason is a
+    # declaration, never proof. The same corroborated ledger reads two ways by provenance.
+    def _independence_ledger(name: str, declared: list[float],
+                             sources: dict[str, list[float]],
+                             provenance: dict[str, str]) -> str:
+        path = str(directory / name)
+        names = list(sources)
+        for i in range(len(declared)):
+            continuity.beat(path, wall=1_000.0 + i * 60.0, mono=i * 60.0, boot=500.0,
+                            pid=1, interval=60.0, progress=declared[i],
+                            effects={n: sources[n][i] for n in names},
+                            provenance=provenance)
+        return path
+
+    independent = continuity.verify(
+        _independence_ledger("independent.jsonl", [1, 2, 3, 4],
+                             {"db_rows": [10, 20, 30, 40], "files": [5, 6, 7, 8]},
+                             {"db_rows": "read_only", "files": "causal"}),
+        sleeps=[], stall_after=3)
+    unproven = continuity.verify(
+        _independence_ledger("unproven.jsonl", [1, 2, 3, 4],
+                             {"db_rows": [10, 20, 30, 40], "files": [5, 6, 7, 8]},
+                             {"db_rows": "within", "files": "within"}),
+        sleeps=[], stall_after=3)
+
     return {
         "real": {"ledger": real, "verdict": report["verdict"], "beats": report["beats"],
                  "chain_ok": report["chain_ok"], "counts": report["counts"],
@@ -335,6 +363,10 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
                           "corroborated_sources": corroborated["effect_sources"],
                           "uncorroborated_verdict": uncorroborated["verdict"],
                           "split_verdict": witnesses_split["verdict"]},
+        "independence": {"independent_verdict": independent["verdict"],
+                         "independent_sources": independent["independent_sources"],
+                         "unproven_verdict": unproven["verdict"],
+                         "unproven_sources": unproven["independent_sources"]},
         "absences": continuity.absences(real),
         "power_sleeps_recorded": len(power.load()),
     }
@@ -367,7 +399,11 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
           and demo["effect"]["unreported_verdict"] == "CONTINUOUS"
           and demo["corroboration"]["corroborated_verdict"] == "CONTINUOUS"
           and demo["corroboration"]["uncorroborated_verdict"] == "SUBJECT_UNCORROBORATED"
-          and demo["corroboration"]["split_verdict"] == "SUBJECT_WITNESSES_SPLIT")
+          and demo["corroboration"]["split_verdict"] == "SUBJECT_WITNESSES_SPLIT"
+          and demo["independence"]["independent_verdict"] == "CONTINUOUS"
+          and len(demo["independence"]["independent_sources"]) == 2
+          and demo["independence"]["unproven_verdict"] == "SUBJECT_INDEPENDENCE_UNPROVEN"
+          and demo["independence"]["unproven_sources"] == [])
 
     lines: list[str] = []
     lines.append("MOONSHOT-M  the machine that can attest its own continuity")
@@ -425,6 +461,11 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
     lines.append("   an advance they all witness is corroborated, one only a single source")
     lines.append("   witnesses is SUBJECT_UNCORROBORATED, and sources that contradict each other")
     lines.append("   are SUBJECT_WITNESSES_SPLIT -- one voice is never awarded independence.")
+    lines.append("   Going one level deeper: agreement is not independence, so each source may")
+    lines.append("   DECLARE why it is beyond the subject's reach (read-only / causal / external),")
+    lines.append("   and an advance whose agreeing sources are all within reach is reported as")
+    lines.append("   SUBJECT_INDEPENDENCE_UNPROVEN -- the strongest verdict that evidence reaches")
+    lines.append("   when the reason it cannot be forged is merely declared, never proven.")
     lines.append("")
 
     lines.append("4. THE WITNESS, RUN")
@@ -460,10 +501,14 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
                  f"{ef['unsubstantiated_verdict']} ({ef['unsubstantiated_beats']} beats); "
                  f"an unclaimed advance -> {ef['unreported_verdict']}")
     co = demo["corroboration"]
-    lines.append(f"   corroboration (independence counted, not asserted): {co['corroborated_sources']} "
+    lines.append(f"   corroboration (agreement counted, not asserted): {co['corroborated_sources']} "
                  f"sources agreeing -> {co['corroborated_verdict']}; one source -> "
                  f"{co['uncorroborated_verdict']}; sources that contradict -> "
                  f"{co['split_verdict']}")
+    ind = demo["independence"]
+    lines.append(f"   independence (agreement is not independence): {len(ind['independent_sources'])} "
+                 f"source(s) declared beyond reach -> {ind['independent_verdict']}; the same "
+                 f"agreement with every source within reach -> {ind['unproven_verdict']}")
     lines.append("   absences (what did not change):")
     for row in demo["absences"]:
         state = "held steady" if not row["changed"] else "changed"
