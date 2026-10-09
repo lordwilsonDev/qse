@@ -316,7 +316,8 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
     def _independence_ledger(name: str, declared: list[float],
                              sources: dict[str, list[float]],
                              provenance: dict[str, str], *,
-                             source_paths: dict[str, Path] | None = None) -> str:
+                             source_paths: dict[str, Path] | None = None,
+                             measured_paths: dict[str, Path] | None = None) -> str:
         path = str(directory / name)
         names = list(sources)
         for i in range(len(declared)):
@@ -325,7 +326,8 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
             continuity.beat(path, wall=1_000.0 + i * 60.0, mono=i * 60.0, boot=500.0,
                             pid=1, interval=60.0, progress=declared[i],
                             effects={n: sources[n][i] for n in names},
-                            provenance=provenance, sources=passed)
+                            provenance=provenance, sources=passed,
+                            measured=measured_paths)
         return path
 
     independent = continuity.verify(
@@ -359,6 +361,50 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
                              {"db_rows": [10, 20, 30, 40], "files": [5, 6, 7, 8]},
                              {"db_rows": "read_only", "files": "read_only"},
                              source_paths=checked_rw), sleeps=[], stall_after=3)
+
+    # The value itself, measured rather than reported. Reach checks whether the recorder
+    # *could* write a source; this reads it -- so the number an advance rests on is a
+    # function of bytes the recorder opened, pinned by a checksum, not a number the caller
+    # typed. Two read-only sources it reads *and* measures reach the strongest kind; a
+    # reported number the bytes refute is caught by the same read; and an advance whose
+    # agreeing sources were all reported is named so rather than promoted.
+    measured_ro = {n: directory / f"measured_{n}.txt" for n in ("db_rows", "files")}
+    for handle in measured_ro.values():
+        handle.write_bytes(b"")
+    measured_path = str(directory / "measured.jsonl")
+    for i in range(4):
+        for handle in measured_ro.values():      # the subject's files grow ...
+            handle.chmod(0o644)
+            with handle.open("ab") as fh:
+                fh.write(b"y" * (16 * (i + 1)))
+            handle.chmod(0o444)                  # ... then are handed over read-only
+        continuity.beat(measured_path, wall=1_000.0 + i * 60.0, mono=i * 60.0, boot=500.0,
+                        pid=1, interval=60.0, progress=float(i + 1),
+                        measured=dict(measured_ro))
+    measured = continuity.verify(measured_path, sleeps=[], stall_after=3)
+
+    refuted = {n: directory / f"refuted_{n}.txt" for n in ("db_rows", "files")}
+    for handle in refuted.values():
+        handle.write_bytes(b"x" * 4)             # 4 bytes, whatever the caller reports
+        handle.chmod(0o444)
+    contradicted_values = continuity.verify(
+        _independence_ledger("refuted.jsonl", [1, 2, 3, 4],
+                             {"db_rows": [100, 200, 300, 400], "files": [50, 60, 70, 80]},
+                             {}, measured_paths=refuted), sleeps=[], stall_after=3)
+
+    reported_ro = {n: directory / f"reported_{n}.txt" for n in ("db_rows", "files")}
+    for handle in reported_ro.values():
+        handle.write_bytes(b"x")
+        handle.chmod(0o444)
+    flat_clock = directory / "clock.txt"            # measured, but it never advances
+    flat_clock.write_bytes(b"z" * 8)
+    reported_values = continuity.verify(
+        _independence_ledger("reported_values.jsonl", [1, 2, 3, 4],
+                             {"db_rows": [10, 20, 30, 40], "files": [5, 6, 7, 8],
+                              "clock": [8, 8, 8, 8]},
+                             {"db_rows": "read_only", "files": "read_only"},
+                             source_paths=reported_ro, measured_paths={"clock": flat_clock}),
+        sleeps=[], stall_after=3)
 
     return {
         "real": {"ledger": real, "verdict": report["verdict"], "beats": report["beats"],
@@ -395,6 +441,14 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
                          "attested_sources": attested["attested_sources"],
                          "contradicted_verdict": contradicted["verdict"],
                          "contradicted_sources": contradicted["contradicted_sources"]},
+        "values": {"measured_verdict": measured["verdict"],
+                   "measured_sources": measured["measured_sources"],
+                   "measured_independence": measured["independence_counts"].get(
+                       "INDEPENDENCE_MEASURED", 0),
+                   "contradicted_verdict": contradicted_values["verdict"],
+                   "contradicted_values": contradicted_values["contradicted_values"],
+                   "reported_verdict": reported_values["verdict"],
+                   "reported_sources": reported_values["reported_sources"]},
         "absences": continuity.absences(real),
         "power_sleeps_recorded": len(power.load()),
     }
@@ -435,7 +489,14 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
           and demo["independence"]["attested_verdict"] == "CONTINUOUS"
           and len(demo["independence"]["attested_sources"]) == 2
           and demo["independence"]["contradicted_verdict"] == "SUBJECT_INDEPENDENCE_CONTRADICTED"
-          and len(demo["independence"]["contradicted_sources"]) == 2)
+          and len(demo["independence"]["contradicted_sources"]) == 2
+          and demo["values"]["measured_verdict"] == "CONTINUOUS"
+          and len(demo["values"]["measured_sources"]) == 2
+          and demo["values"]["measured_independence"] >= 1
+          and demo["values"]["contradicted_verdict"] == "SUBJECT_VALUES_CONTRADICTED"
+          and len(demo["values"]["contradicted_values"]) == 2
+          and demo["values"]["reported_verdict"] == "SUBJECT_VALUES_REPORTED"
+          and len(demo["values"]["reported_sources"]) == 2)
 
     lines: list[str] = []
     lines.append("MOONSHOT-M  the machine that can attest its own continuity")
@@ -500,7 +561,15 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
     lines.append("   when the reason it cannot be forged is merely sworn. But a declaration can be")
     lines.append("   CHECKED: name a source's path and the recorder stats it itself, so two files")
     lines.append("   it cannot write are ATTESTED, and a writable file marked read-only is")
-    lines.append("   SUBJECT_INDEPENDENCE_CONTRADICTED -- the check outranks the word.")
+    lines.append("   SUBJECT_INDEPENDENCE_CONTRADICTED -- the check outranks the word. And the")
+    lines.append("   VALUE can be measured, not only the permission: name a path and the recorder")
+    lines.append("   reads the bytes itself, so the number an advance rests on is a function of")
+    lines.append("   the file and a checksum pins which bytes -- something a caller holding a")
+    lines.append("   number cannot produce. Two read-only sources it both checks and reads are")
+    lines.append("   INDEPENDENCE_MEASURED; a reported number the bytes refute is")
+    lines.append("   SUBJECT_VALUES_CONTRADICTED; and an advance whose agreeing sources are all")
+    lines.append("   still reported is SUBJECT_VALUES_REPORTED -- measured, or said to be a")
+    lines.append("   number the caller typed, never the two confused.")
     lines.append("")
 
     lines.append("4. THE WITNESS, RUN")
@@ -548,6 +617,14 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
                  f"read-only -> {ind['attested_verdict']} ({len(ind['attested_sources'])} "
                  f"attested); two writable sources marked read-only -> "
                  f"{ind['contradicted_verdict']} ({len(ind['contradicted_sources'])} contradicted)")
+    val = demo["values"]
+    lines.append(f"   values, MEASURED not reported: two read-only sources the recorder reads "
+                 f"itself (a checksum over the bytes) -> {val['measured_verdict']} "
+                 f"({len(val['measured_sources'])} measured, {val['measured_independence']} "
+                 f"independence beats); a reported number the bytes refute -> "
+                 f"{val['contradicted_verdict']} ({len(val['contradicted_values'])} contradicted); "
+                 f"reach checked, values still the caller's -> {val['reported_verdict']} "
+                 f"({len(val['reported_sources'])} reported)")
     lines.append("   absences (what did not change):")
     for row in demo["absences"]:
         state = "held steady" if not row["changed"] else "changed"
@@ -567,9 +644,12 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
     lines.append("   honest limits: it attests a DECLARED SUBJECT's continuity, watched through")
     lines.append("   an independent probe (a process identity, or whatever the caller supplies);")
     lines.append("   it does not attest that the subject did anything, and a subject the probe")
-    lines.append("   cannot see reads as SUBJECT_MISSING. The sleep witness is the OS power log,")
-    lines.append("   so a rotated or suppressed log turns a sleep into HEARTBEAT_LOST -- an")
-    lines.append("   honest 'unknown', never a false 'continuous'. See docs/moonshot-m.md.")
+    lines.append("   cannot see reads as SUBJECT_MISSING. A measured value is what the bytes")
+    lines.append("   say, read by the recorder's own uid -- it does not prove the subject did not")
+    lines.append("   write those bytes, only that the number was the recorder's to read. The sleep")
+    lines.append("   witness is the OS power log, so a rotated or suppressed log turns a sleep")
+    lines.append("   into HEARTBEAT_LOST -- an honest 'unknown', never a false 'continuous'. See")
+    lines.append("   docs/moonshot-m.md.")
 
     payload = {
         "profile": dict(prof),

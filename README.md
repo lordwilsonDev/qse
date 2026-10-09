@@ -131,7 +131,12 @@ fewer than two beyond reach is `SUBJECT_INDEPENDENCE_UNPROVEN`, so the strongest
 **checked, not just recorded**: name each source's path and the recorder stats it itself,
 so two sources it cannot write are `INDEPENDENCE_ATTESTED` (independence observed) and a
 writable source marked `read_only` is `SUBJECT_INDEPENDENCE_CONTRADICTED` -- the check
-outranks the word. The full inversions and the honest limits are in
+outranks the word. And the *value* can be **measured, not just reported**: name a source's
+path and the recorder reads the bytes itself (a checksum over what it read), so the number
+the advance rests on is a function of the file, a reported number the bytes refute is
+`SUBJECT_VALUES_CONTRADICTED`, two sources it both checks read-only and measures are
+`INDEPENDENCE_MEASURED`, and an advance resting only on numbers the caller typed is
+`SUBJECT_VALUES_REPORTED`. The full inversions and the honest limits are in
 [docs/moonshot-m.md](docs/moonshot-m.md).
 
 ## MOONSHOT-C — the same test on a cloud bill, in one script
@@ -293,7 +298,7 @@ cd ~/projects/qse
 python3 -B -W error::ResourceWarning -m unittest discover -s qse/tests -t .
 ```
 
-419 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
+431 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
 resolves) and so does `-B` (bytecode caches left in the tree are noise).
 
 ## The seven slots
@@ -343,7 +348,7 @@ qse/control/        replayable state, policy, information gain, the controller
 qse/ledger/         hash-chained JSONL events, receipts, the "why" reconstruction
 qse/metrics/        QBY, BSR, EC, BC, VI, OC
 qse/cloud/          the MOONSHOT-C synthetic cloud fixture (scenario.py)
-qse/witness/        MOONSHOT-M: the continuity ledger, OS power-log witness, progress, side-effect, corroboration + independence checks
+qse/witness/        MOONSHOT-M: the continuity ledger, OS power-log witness, progress, side-effect, corroboration + independence + value-measurement checks
 qse/cli.py          the command line
 moonshot_cloud.py   MOONSHOT-C: the same terminal comparison, on a cloud bill, in one command
 moonshot_machine.py MOONSHOT-M: invert a machine's axioms and build the witness, in one command

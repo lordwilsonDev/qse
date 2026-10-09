@@ -9,11 +9,11 @@ from .continuity import (BEAT, BEYOND_REACH, CORROBORATION_KINDS, DEFAULT_INTERV
                         DEFAULT_STALL_AFTER, EFFECT_KINDS, INDEPENDENCE_KINDS, POLICIES,
                         PROGRESS_KINDS, PROVENANCE_KINDS, REACH_KINDS, SLACK, SUBJECT_FIELDS,
                         SUBJECT_KINDS, SUBJECT_TOKEN_DRIFT, SUBJECT_VOUCH_CONFLICT,
-                        absences, beat, boot_time, classify, classify_effect,
-                        classify_progress, classify_subject, corroborate, effect_of,
-                        effects_of, file_effect, independence, observe_reach, progress_of,
-                        provenance_of, reach_of, resolve_subject, subject_identity,
-                        subject_token, verify)
+                        VALUE_KINDS, absences, beat, boot_time, classify, classify_effect,
+                        classify_progress, classify_subject, content_digest, corroborate,
+                        effect_of, effects_of, file_effect, independence, measure,
+                        measurements_of, observe_reach, progress_of, provenance_of, reach_of,
+                        resolve_subject, subject_identity, subject_token, value_of, verify)
 from .power import Sleep, covering, load as load_power_log, parse as parse_power_log, read as read_power_log
 
 __all__ = [
@@ -22,11 +22,12 @@ __all__ = [
     "DEFAULT_STALL_AFTER", "EFFECT_KINDS", "INDEPENDENCE_KINDS", "POLICIES",
     "PROGRESS_KINDS", "PROVENANCE_KINDS", "REACH_KINDS", "SLACK", "SUBJECT_FIELDS",
     "SUBJECT_KINDS",
-    "SUBJECT_TOKEN_DRIFT", "SUBJECT_VOUCH_CONFLICT",
+    "SUBJECT_TOKEN_DRIFT", "SUBJECT_VOUCH_CONFLICT", "VALUE_KINDS",
     "absences", "beat", "boot_time", "classify", "classify_effect",
-    "classify_progress", "classify_subject", "corroborate", "effect_of",
-    "effects_of", "file_effect", "independence", "observe_reach",
+    "classify_progress", "classify_subject", "content_digest", "corroborate",
+    "effect_of", "effects_of", "file_effect", "independence", "measure",
+    "measurements_of", "observe_reach",
     "progress_of", "provenance_of", "reach_of", "resolve_subject",
-    "subject_identity", "subject_token", "verify",
+    "subject_identity", "subject_token", "value_of", "verify",
     "Sleep", "covering", "load_power_log", "parse_power_log", "read_power_log",
 ]

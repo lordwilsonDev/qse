@@ -18,12 +18,12 @@ from .support import Workspace, pin_clock
 
 def _beat(path, index: int, *, boot: float = 500.0, watches=None, subject=None,
           progress=None, effect=None, effects=None, provenance=None,
-          sources=None) -> None:
+          sources=None, measured=None) -> None:
     """A fully injected heartbeat, so a history can be replayed without waiting."""
     continuity.beat(path, wall=1_000.0 + index * 60.0, mono=index * 60.0,
                     boot=boot, pid=1, interval=60.0, watches=watches or {},
                     subject=subject, progress=progress, effect=effect, effects=effects,
-                    provenance=provenance, sources=sources)
+                    provenance=provenance, sources=sources, measured=measured)
 
 
 class TheBeatLedger(unittest.TestCase):
@@ -585,6 +585,145 @@ class TheIndependenceOfWitnesses(unittest.TestCase):
         self.assertEqual(
             continuity.reach_of({"reach": {"a": "REACH_READ_ONLY", "b": "sworn"}}),
             {"a": "REACH_READ_ONLY"})
+
+
+class TheValueTheRecorderMeasures(unittest.TestCase):
+    """The value can be measured, not only reported: the recorder reads the bytes."""
+
+    def setUp(self) -> None:
+        pin_clock()
+        self.ws = Workspace()
+        self.addCleanup(self.ws.close)
+        self.path = self.ws.ledger("values.jsonl")
+
+    def _read_only(self, name, data=b"x"):
+        handle = self.ws.file(name + ".txt")
+        handle.write_bytes(data)
+        handle.chmod(0o444)
+        return handle
+
+    def _grown_beat(self, index, paths, *, per_tick=8, **kw):
+        """Grow the sources, hand them over read-only, then beat -- measured, not reported."""
+        for handle in paths.values():
+            handle.chmod(0o644)
+            with handle.open("ab") as fh:
+                fh.write(b"y" * (per_tick * (index + 1)))
+            handle.chmod(0o444)
+        _beat(self.path, index, measured=dict(paths), **kw)
+
+    def test_measure_reads_the_bytes_and_pins_them_with_a_checksum(self):
+        # A checksum over bytes, not a number: two files of the same size with different
+        # contents hash differently, which a size alone can never tell apart.
+        a = self._read_only("a", b"aaaa")
+        b = self._read_only("b", b"bbbb")
+        self.assertEqual(continuity.measure(a)["bytes"], continuity.measure(b)["bytes"])
+        self.assertNotEqual(continuity.content_digest(a), continuity.content_digest(b))
+        self.assertIsNone(continuity.content_digest(self.ws.file("missing")))
+        self.assertIsNone(continuity.measure(self.ws.file("missing")))
+
+    def test_a_measured_source_takes_its_value_from_the_recorder_not_the_caller(self):
+        handle = self._read_only("log", b"x" * 5)
+        _beat(self.path, 0, measured={"rows": handle})
+        record = chain.load(self.path)[0]
+        self.assertEqual(record["effects"]["rows"], 5.0)
+        self.assertEqual(record["values"]["rows"], "VALUE_MEASURED")
+        self.assertEqual(record["measured"]["rows"]["digest"],
+                         continuity.content_digest(handle))
+
+    def test_a_reported_value_with_nothing_to_check_is_named_reported(self):
+        _beat(self.path, 0, effects={"rows": 5.0})
+        report = continuity.verify(self.path, sleeps=[])
+        self.assertEqual(report["value_provenance"], {"rows": "VALUE_REPORTED"})
+        self.assertEqual(report["reported_sources"], ["rows"])
+        self.assertEqual(report["measured_sources"], [])
+
+    def test_a_reported_number_the_bytes_refute_is_contradicted(self):
+        handle = self._read_only("log", b"x" * 4)
+        for i in range(4):
+            _beat(self.path, i, progress=float(i + 1),
+                  effects={"rows": 100.0 * (i + 1)}, measured={"rows": handle})
+        report = continuity.verify(self.path, sleeps=[], stall_after=3)
+        self.assertEqual(report["value_provenance"]["rows"], "VALUE_CONTRADICTED")
+        self.assertEqual(report["contradicted_values"], ["rows"])
+        self.assertEqual(len(report["value_contradictions"]), 1)
+        self.assertEqual(report["verdict"], "SUBJECT_VALUES_CONTRADICTED")
+
+    def test_a_reported_number_the_bytes_confirm_is_measured(self):
+        handle = self._read_only("log", b"x" * 4)
+        for i in range(2):
+            _beat(self.path, i, progress=float(i + 1), effects={"rows": 4.0},
+                  measured={"rows": handle})
+        report = continuity.verify(self.path, sleeps=[], stall_after=3)
+        self.assertEqual(report["value_provenance"]["rows"], "VALUE_MEASURED")
+        self.assertEqual(report["contradicted_values"], [])
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_two_sources_the_recorder_measures_read_only_are_measured(self):
+        paths = {n: self._read_only(n, b"") for n in ("db_rows", "files")}
+        for i in range(4):
+            self._grown_beat(i, paths, progress=float(i + 1))
+        report = continuity.verify(self.path, sleeps=[], stall_after=3)
+        self.assertEqual(report["measured_sources"], ["db_rows", "files"])
+        self.assertEqual(report["independence_counts"], {"INDEPENDENCE_MEASURED": 3})
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_one_measured_source_does_not_vouch_for_a_reported_neighbour(self):
+        # A measurement only covers the source whose path was named: the neighbour's number
+        # is still the caller's, so the pair reaches ATTESTED (reach checked) and not the
+        # stronger MEASURED -- the same rule that keeps a declaration from being promoted.
+        measured = self._read_only("db_rows", b"")
+        reported = self._read_only("files", b"x")
+        for i in range(4):
+            self._grown_beat(i, {"db_rows": measured}, progress=float(i + 1),
+                             effects={"files": float(5 + i)}, sources={"files": reported})
+        report = continuity.verify(self.path, sleeps=[], stall_after=3)
+        self.assertEqual(report["measured_sources"], ["db_rows"])
+        self.assertEqual(report["independence_counts"], {"INDEPENDENCE_ATTESTED": 3})
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_an_advance_resting_on_reported_values_is_named_reported(self):
+        paths = {n: self._read_only(n, b"x") for n in ("db_rows", "files")}
+        clock = self.ws.file("clock.txt")
+        clock.write_bytes(b"z" * 8)  # measured, but it never advances
+        for i in range(4):
+            _beat(self.path, i, progress=float(i + 1),
+                  effects={"db_rows": float(10 * (i + 1)), "files": float(5 + i),
+                           "clock": 8.0},
+                  provenance={"db_rows": "read_only", "files": "read_only"},
+                  sources=paths, measured={"clock": clock})
+        report = continuity.verify(self.path, sleeps=[], stall_after=3)
+        self.assertEqual(report["reported_sources"], ["db_rows", "files"])
+        self.assertEqual(report["measured_sources"], ["clock"])
+        self.assertEqual(len(report["value_reported"]), 1)
+        self.assertEqual(report["verdict"], "SUBJECT_VALUES_REPORTED")
+
+    def test_a_ledger_that_measures_nothing_keeps_its_prior_reading(self):
+        # Backward compatibility: with no path named there is nothing a value could have
+        # been checked against, so the value axis stays silent rather than penalising it.
+        _beat(self.path, 0, progress=1.0, effects={"a": 1.0, "b": 1.0})
+        _beat(self.path, 1, progress=2.0, effects={"a": 2.0, "b": 2.0})
+        report = continuity.verify(self.path, sleeps=[], stall_after=3)
+        self.assertEqual(report["value_reported"], [])
+        self.assertEqual(report["contradicted_values"], [])
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_measuring_a_source_also_settles_its_reach(self):
+        # One path buys both observations: the recorder read the file, so it knows whether
+        # it could have written it.
+        handle = self._read_only("log", b"x")
+        _beat(self.path, 0, measured={"rows": handle})
+        report = continuity.verify(self.path, sleeps=[])
+        self.assertEqual(report["effect_reach"], {"rows": "REACH_READ_ONLY"})
+        self.assertEqual(report["measured_values"]["rows"]["bytes"], 1.0)
+
+    def test_a_non_path_measurement_is_refused_at_write_time(self):
+        with self.assertRaises(ValueError):
+            continuity.beat(self.path, wall=1.0, measured={"rows": 5})
+
+    def test_value_of_ignores_an_unrecognised_kind(self):
+        self.assertEqual(
+            continuity.value_of({"values": {"a": "VALUE_MEASURED", "b": "sworn"}}),
+            {"a": "VALUE_MEASURED"})
 
 
 class ThePowerLogWitness(unittest.TestCase):

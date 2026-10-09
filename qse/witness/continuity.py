@@ -25,6 +25,7 @@ history -- including its one structural limit, that the last line is uncatchable
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
@@ -316,9 +317,16 @@ def observe_reach(path: str | os.PathLike[str]) -> str:
 #: two advancing sources the recorder itself observed to be read-only. ``INDEPENDENCE_
 #: CONTRADICTED`` is the inverse -- a source declared beyond reach that the recorder's own
 #: stat() showed it could write, so the declaration is defeated and reported, not believed.
-INDEPENDENCE_KINDS = ("INDEPENDENCE_ATTESTED", "INDEPENDENCE_INDEPENDENT",
-                      "INDEPENDENCE_CONTRADICTED", "INDEPENDENCE_DECLARED_ONLY",
-                      "INDEPENDENCE_UNPROVEN", "INDEPENDENCE_NONE")
+#:
+#: ``INDEPENDENCE_MEASURED`` is the one kind a *measurement* reaches and a permission check
+#: alone cannot: two advancing sources the recorder both observed read-only *and* read
+#: itself, so the value is a function of bytes it opened rather than a number the caller
+#: typed. It sits above ATTESTED because it is the same reach plus one more observation --
+#: the value's provenance, not only the file's permissions.
+INDEPENDENCE_KINDS = ("INDEPENDENCE_MEASURED", "INDEPENDENCE_ATTESTED",
+                      "INDEPENDENCE_INDEPENDENT", "INDEPENDENCE_CONTRADICTED",
+                      "INDEPENDENCE_DECLARED_ONLY", "INDEPENDENCE_UNPROVEN",
+                      "INDEPENDENCE_NONE")
 
 
 def provenance_of(record: Mapping[str, Any]) -> dict[str, str]:
@@ -363,6 +371,117 @@ def _source_reach(previous: Mapping[str, Any], current: Mapping[str, Any],
     return reach_of(current).get(name) or reach_of(previous).get(name)
 
 
+#: Reach is a fact about a source's *permissions*; this is a fact about its *value* -- what
+#: the recorder read, not what the caller typed. The whole of MOONSHOT-M has been moving a
+#: claim from given to checkable, and the last claim still merely given was the number
+#: itself: ``progress`` is the subject's word and ``effects`` were the caller's. Name a
+#: source's path and the recorder reads the bytes for itself (``measure``), so the advancing
+#: value is a function of the file and a checksum pins which bytes it read -- something a
+#: caller holding only a number cannot produce. When a caller *reports* a value and also
+#: names its path, the report is checked against the read: agreement makes it measured, and
+#: a number the bytes refute is ``VALUE_CONTRADICTED``. So the record measures the value
+#: *and* verifies the claim, rather than measuring while believing.
+#:
+#: * ``VALUE_MEASURED`` -- the recorder read the bytes itself (or confirmed a reported value
+#:   against them), so the value is an observation, not a report.
+#: * ``VALUE_REPORTED`` -- the value is the caller's number, with nothing for the recorder to
+#:   check it against. Recorded, never promoted.
+#: * ``VALUE_CONTRADICTED`` -- the caller reported a number and the bytes the recorder read
+#:   disagreed: the report is defeated by the measurement and named, not believed.
+#: * ``VALUE_UNKNOWN`` -- a path was named but could not be read; nothing was observed.
+VALUE_KINDS = ("VALUE_MEASURED", "VALUE_REPORTED", "VALUE_CONTRADICTED", "VALUE_UNKNOWN")
+
+
+def _read_bytes(path: str | os.PathLike[str]) -> bytes | None:
+    """The bytes of a source the recorder opens and reads itself, or ``None``."""
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def content_digest(path: str | os.PathLike[str]) -> str | None:
+    """A checksum over the bytes the recorder read itself, or ``None`` when unreadable.
+
+    This is "a checksum over bytes it did not author": the value is a function of the
+    file's contents, computed by the recorder's own read, so it cannot be produced by a
+    caller who holds only a number -- and two files of the same *size* with different bytes
+    hash differently, which a size alone can never tell apart.
+    """
+    data = _read_bytes(path)
+    return None if data is None else hashlib.sha256(data).hexdigest()
+
+
+def measure(path: str | os.PathLike[str]) -> dict[str, Any] | None:
+    """Read a source for itself: the byte count read and the checksum of those bytes.
+
+    The value-level counterpart of ``observe_reach``. Reach asks whether the recorder
+    *could* write a source; this reads it, so the number a witness advances is a function
+    of bytes the recorder opened rather than a number the caller supplied. ``None`` when
+    the path cannot be read -- nothing is observed, so nothing is claimed.
+    """
+    data = _read_bytes(path)
+    if data is None:
+        return None
+    return {"bytes": float(len(data)), "digest": hashlib.sha256(data).hexdigest()}
+
+
+def _value_kind(reported: float | None, observed: Mapping[str, Any] | None) -> str:
+    """Classify a source's value from the report (if any) and the measurement (if any).
+
+    A reported number the recorder did not read is ``VALUE_REPORTED``; a value it read (or
+    a report the read confirmed) is ``VALUE_MEASURED``; a report the bytes refute is
+    ``VALUE_CONTRADICTED``; a path it could not read is ``VALUE_UNKNOWN``.
+    """
+    if observed is None:
+        return "VALUE_UNKNOWN"
+    if reported is None:
+        return "VALUE_MEASURED"
+    measured_bytes = observed.get("bytes")
+    if isinstance(measured_bytes, (int, float)) and round(reported - float(measured_bytes), 6) == 0:
+        return "VALUE_MEASURED"
+    return "VALUE_CONTRADICTED"
+
+
+def value_of(record: Mapping[str, Any]) -> dict[str, str]:
+    """The provenance of each named source's *value*, as ``{name: VALUE_KIND}``.
+
+    ``reach_of`` reads whether the recorder could write a source; this reads whether the
+    value it holds was one the recorder measured. Only kinds drawn from ``VALUE_KINDS``
+    are kept, so a malformed observation is ignored rather than believed -- the same rule
+    the record applies to every declaration.
+    """
+    raw = record.get("values") or {}
+    out: dict[str, str] = {}
+    for name, kind in raw.items():
+        if isinstance(kind, str) and kind in VALUE_KINDS:
+            out[str(name)] = kind
+    return out
+
+
+def measurements_of(record: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """The measurements the recorder took, as ``{name: {bytes, digest}}`` (values may be None)."""
+    raw = record.get("measured") or {}
+    out: dict[str, dict[str, Any]] = {}
+    for name, observed in raw.items():
+        if not isinstance(observed, Mapping):
+            continue
+        size = observed.get("bytes")
+        digest = observed.get("digest")
+        out[str(name)] = {
+            "bytes": float(size) if isinstance(size, (int, float)) and not isinstance(size, bool) else None,
+            "digest": digest if isinstance(digest, str) else None,
+        }
+    return out
+
+
+def _source_value(previous: Mapping[str, Any], current: Mapping[str, Any],
+                  name: str) -> str | None:
+    """A source's value provenance, taken from the later beat that recorded one."""
+    return value_of(current).get(name) or value_of(previous).get(name)
+
+
 def independence(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dict[str, Any]:
     """Count how many *advancing* sources are declared beyond the subject's reach.
 
@@ -371,6 +490,9 @@ def independence(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dic
     no declaration is credited to none of the reach classes -- the record reports
     independence as unproven rather than silently letting agreement stand in for it.
 
+    * ``INDEPENDENCE_MEASURED`` -- two or more advancing sources the recorder both *checked*
+      read-only and *measured* itself: the value is a function of bytes it read, so it is
+      observed rather than reported, one level past the reach check.
     * ``INDEPENDENCE_ATTESTED`` -- two or more advancing sources the recorder itself
       *checked* read-only: independence observed, not merely sworn.
     * ``INDEPENDENCE_INDEPENDENT`` -- two or more beyond-reach sources advanced (by
@@ -390,6 +512,7 @@ def independence(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dic
     regressed = [name for name in common if deltas[name] < 0]
     declared = {name: _source_provenance(previous, current, name) for name in common}
     checked = {name: _source_reach(previous, current, name) for name in common}
+    values = {name: _source_value(previous, current, name) for name in common}
     # A declaration beyond reach that the recorder's own stat() contradicts -- it can write
     # the source -- is defeated here: the source is not credited as beyond reach and the
     # contradiction is reported, because a check outranks a declaration.
@@ -398,6 +521,11 @@ def independence(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dic
         if declared.get(name) in BEYOND_REACH and checked.get(name) == "REACH_WRITABLE"
     ]
     checked_beyond = [name for name in advancing if checked.get(name) == "REACH_READ_ONLY"]
+    # The value-level counterpart: a source whose reach is checked read-only *and* whose
+    # value the recorder measured, so both the permission and the number are observations.
+    measured_beyond = [name for name in advancing
+                       if checked.get(name) == "REACH_READ_ONLY"
+                       and values.get(name) == "VALUE_MEASURED"]
     beyond = [name for name in advancing
               if declared.get(name) in BEYOND_REACH and name not in contradicted]
     within = [name for name in advancing if declared.get(name) == "within"]
@@ -406,6 +534,8 @@ def independence(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dic
         kind = "INDEPENDENCE_NONE"
     elif contradicted:
         kind = "INDEPENDENCE_CONTRADICTED"
+    elif len(measured_beyond) >= 2:
+        kind = "INDEPENDENCE_MEASURED"
     elif len(checked_beyond) >= 2:
         kind = "INDEPENDENCE_ATTESTED"
     elif len(beyond) >= 2:
@@ -417,8 +547,9 @@ def independence(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dic
     else:
         kind = "INDEPENDENCE_NONE"
     return {"kind": kind, "sources": common, "deltas": deltas, "declared": declared,
-            "checked": checked, "advancing": advancing, "regressed": regressed,
-            "beyond": beyond, "checked_beyond": checked_beyond, "contradicted": contradicted,
+            "checked": checked, "values": values, "advancing": advancing,
+            "regressed": regressed, "beyond": beyond, "checked_beyond": checked_beyond,
+            "measured_beyond": measured_beyond, "contradicted": contradicted,
             "within": within, "undeclared": undeclared}
 
 #: The fields of a subject identity that must not change across a restart. A pid can be
@@ -462,6 +593,7 @@ def beat(
     effects: Mapping[str, Any] | None = None,
     provenance: Mapping[str, Any] | None = None,
     sources: Mapping[str, str | os.PathLike[str]] | None = None,
+    measured: Mapping[str, str | os.PathLike[str]] | None = None,
     policy: str | None = None,
     interval: float = DEFAULT_INTERVAL,
     note: str = "",
@@ -487,6 +619,15 @@ def beat(
     named effect source to a path the recorder stats itself, so a ``read_only`` claim can be
     observed (``REACH_KINDS``, via ``observe_reach``) instead of sworn. A caller that names
     a writable path and declares it ``read_only`` is caught, not believed.
+
+    ``measured`` makes the *value* itself something the recorder reads rather than believes:
+    it maps each named effect source to a path the recorder opens, records the byte count it
+    read (as the source's ``effect``) and a checksum over those bytes, and -- because it read
+    the file -- the reach of that path too (``VALUE_KINDS``). A source named here with no
+    reported value takes its value from the read; a source that also carries a reported
+    value is *checked* against the read, so a number the bytes refute is ``VALUE_CONTRADICTED``
+    rather than recorded. A source named in neither place is reported, and one named but
+    unreadable is ``VALUE_UNKNOWN`` -- nothing is filled in.
     """
     if policy is not None and policy not in POLICIES:
         raise ValueError(f"unknown subject policy {policy!r}; choose from {POLICIES}")
@@ -511,6 +652,28 @@ def beat(
         if not isinstance(source, (str, os.PathLike)):
             raise ValueError(f"source {name!r} must be a path, got {type(source).__name__}")
         reached[str(name)] = observe_reach(source)
+    # Values the recorder reads for itself. Naming a path makes the value measured (or, when
+    # a report is also given, checked against the read); the read also settles the source's
+    # reach, so one path buys both observations. A source with no path keeps its reported
+    # value, recorded but never promoted.
+    observed_values: dict[str, dict[str, Any] | None] = {}
+    value_kinds: dict[str, str] = {}
+    for name, source in (measured or {}).items():
+        if not isinstance(source, (str, os.PathLike)):
+            raise ValueError(f"measured source {name!r} must be a path, got "
+                             f"{type(source).__name__}")
+        observed = measure(source)
+        key = str(name)
+        kind = _value_kind(named.get(key), observed)
+        observed_values[key] = observed
+        value_kinds[key] = kind
+        reached[key] = observe_reach(source)
+        if kind == "VALUE_MEASURED" and named.get(key) is None and observed is not None:
+            named[key] = observed["bytes"]
+    # Every other effect value is the caller's number, named as such: a source with no path
+    # to read is reported, and the record says so rather than leaving the value unclassified.
+    for key in named:
+        value_kinds.setdefault(key, "VALUE_REPORTED")
     record = {
         "ev": BEAT,
         "subject": dict(subject) if subject else None,
@@ -519,6 +682,8 @@ def beat(
         "effects": named,
         "provenance": declared,
         "reach": reached,
+        "values": value_kinds,
+        "measured": observed_values,
         "policy": (str(policy) if policy else None),
         "wall": round(float(time.time() if wall is None else wall), 6),
         "mono": round(float(time.monotonic() if mono is None else mono), 6),
@@ -725,6 +890,13 @@ def verify(
         "contradicted_sources": [],
         "unproven_independence": [],
         "contradicted_independence": [],
+        "value_provenance": {},
+        "measured_values": {},
+        "measured_sources": [],
+        "reported_sources": [],
+        "contradicted_values": [],
+        "value_contradictions": [],
+        "value_reported": [],
         "power_sleeps": None,
         "verdict": "EMPTY",
     }
@@ -858,6 +1030,22 @@ def verify(
         if name not in contradicted
         and (reach_map.get(name) == "REACH_READ_ONLY" or prov_map.get(name) in BEYOND_REACH)
     )
+    # The value's provenance, one level past the reach check: did the recorder read the
+    # bytes, or is the number the caller's? A source it read is measured; a reported value
+    # with nothing to check against is reported; a report the bytes refute is contradicted.
+    value_map: dict[str, str] = {}
+    measured_map: dict[str, dict[str, Any]] = {}
+    for b in beats:
+        value_map.update(value_of(b))
+        measured_map.update(measurements_of(b))
+    result["value_provenance"] = value_map
+    result["measured_values"] = measured_map
+    result["measured_sources"] = sorted(n for n, k in value_map.items()
+                                         if k == "VALUE_MEASURED")
+    result["reported_sources"] = sorted(n for n, k in value_map.items()
+                                         if k == "VALUE_REPORTED")
+    result["contradicted_values"] = sorted(n for n, k in value_map.items()
+                                            if k == "VALUE_CONTRADICTED")
     indep_rows = [independence(a, b) for a, b in zip(beats, beats[1:])]
     result["independence_transitions"] = indep_rows
     indep_counts: dict[str, int] = {}
@@ -865,6 +1053,10 @@ def verify(
         indep_counts[row["kind"]] = indep_counts.get(row["kind"], 0) + 1
     result["independence_counts"] = indep_counts
     prov_engaged = multi and (bool(prov_map) or bool(reach_map))
+    # The value axis engages only where a measurement was actually attempted: a ledger that
+    # names no path has nothing the recorded value could have been checked against, so its
+    # prior reading stands -- the same rule that keeps a provenance-less ledger unpenalised.
+    value_engaged = multi and bool(measured_map)
 
     # Per interval: did the subject *claim* an advance, was any *observed* source present, and
     # did any of them actually advance? The single effect and the named sources are counted
@@ -1016,6 +1208,59 @@ def verify(
         for n in contradicted_runs if n >= stall_after
     ]
 
+    # A reported value the bytes refute. The counterpart of a defeated declaration, one
+    # level down: the reach was checked and passed, but the number the report *held* was
+    # not what the recorder read. Reported as such rather than believed -- measuring is
+    # only half the move; checking the claim against the measurement is the other half.
+    value_contradicted_runs: list[int] = []
+    run_v = 0
+    for i, row in enumerate(indep_rows):
+        if declared_advances[i] and any(
+            row["values"].get(name) == "VALUE_CONTRADICTED" for name in row["advancing"]
+        ):
+            run_v += 1
+        else:
+            if run_v:
+                value_contradicted_runs.append(run_v)
+            run_v = 0
+    if run_v:
+        value_contradicted_runs.append(run_v)
+    result["value_contradictions"] = [
+        {"beats": n,
+         "why": f"the subject claimed an advance on {n} consecutive beats (threshold "
+                f"{stall_after}) and the recorder read bytes that refute a reported value "
+                f"({', '.join(result['contradicted_values'])}): the report is defeated by "
+                f"the measurement"}
+        for n in value_contradicted_runs if n >= stall_after
+    ]
+
+    # An advance whose agreeing sources were all *reported*: the reach may be checked, but
+    # the numbers the claim rests on are still the caller's, with no recording to check them
+    # against. Engaged only where a measurement was attempted at all, so a ledger that names
+    # no path keeps its prior reading rather than being penalised for a check it never made.
+    value_reported_runs: list[int] = []
+    run_r = 0
+    for i, row in enumerate(indep_rows):
+        measured_advancing = [name for name in row["advancing"]
+                              if row["values"].get(name) == "VALUE_MEASURED"]
+        if (value_engaged and row["advancing"] and not measured_advancing
+                and declared_advances[i]):
+            run_r += 1
+        else:
+            if run_r:
+                value_reported_runs.append(run_r)
+            run_r = 0
+    if run_r:
+        value_reported_runs.append(run_r)
+    result["value_reported"] = [
+        {"beats": n,
+         "why": f"the subject claimed an advance on {n} consecutive beats (threshold "
+                f"{stall_after}) that {len(result['reported_sources'])} reported source(s) "
+                f"witnessed and none the recorder measured: reach may be checked, but the "
+                f"value the claim rests on is still the caller's"}
+        for n in value_reported_runs if n >= stall_after
+    ]
+
     if not beats:
         result["verdict"] = "EMPTY"
     elif result["lost"]:
@@ -1032,8 +1277,12 @@ def verify(
         result["verdict"] = "SUBJECT_UNCORROBORATED"
     elif result["contradicted_independence"]:
         result["verdict"] = "SUBJECT_INDEPENDENCE_CONTRADICTED"
+    elif result["value_contradictions"]:
+        result["verdict"] = "SUBJECT_VALUES_CONTRADICTED"
     elif result["unproven_independence"]:
         result["verdict"] = "SUBJECT_INDEPENDENCE_UNPROVEN"
+    elif result["value_reported"]:
+        result["verdict"] = "SUBJECT_VALUES_REPORTED"
     elif result["stalls"]:
         result["verdict"] = "SUBJECT_STALLED"
     else:

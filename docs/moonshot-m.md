@@ -164,6 +164,21 @@ So the inverse capability is:
   plus one merely *declared* stays `INDEPENDENCE_UNPROVEN`: a neighbour's check does not
   vouch for a source it never looked at. A ledger that names no paths keeps its prior
   reading, exactly as one that declares no provenance.
+- **A value can be measured, not only reported.** Reach is a fact about a source's
+  *permissions*; the value is a fact about its *contents*. Name each effect source's path and
+  `beat()` **reads** it -- the byte count becomes the source's `effect` and a checksum over
+  those bytes (`measure`, `content_digest`) pins which bytes it read -- so the number an
+  advance rests on is a function of the file, not a number the caller typed, and two files of
+  the *same size* with different contents no longer read alike. A source named with a
+  reported value is *checked* against the read: a number the bytes confirm is
+  `VALUE_MEASURED`, one they refute is `VALUE_CONTRADICTED` -- sustained over the threshold,
+  the verdict `SUBJECT_VALUES_CONTRADICTED` -- and a source with no path to read is
+  `VALUE_REPORTED`. Two advancing sources the recorder both checks read-only *and* measures
+  are `INDEPENDENCE_MEASURED`: independence observed at the value, one level past the reach
+  check. And an advance whose agreeing sources are all still reported is
+  `SUBJECT_VALUES_REPORTED` when a measurement was made anywhere -- reach checked, but the
+  number the claim rests on is still the caller's. A ledger that names no path keeps its
+  prior reading, and a path the recorder cannot read is `VALUE_UNKNOWN`, left unfilled.
 - **Absence is evidence.** A watched metric that never moved is computed and reported
   with the same standing a change would get, because "the disk did not fill" is exactly
   what a log of changes can never show.
@@ -194,6 +209,7 @@ $ python3 moonshot_machine.py
    corroboration (agreement counted, not asserted): 2 sources agreeing -> CONTINUOUS; one source -> SUBJECT_UNCORROBORATED; sources that contradict -> SUBJECT_WITNESSES_SPLIT
    independence (agreement is not independence): 2 source(s) declared beyond reach -> CONTINUOUS; the same agreement with every source within reach -> SUBJECT_INDEPENDENCE_UNPROVEN
    independence, CHECKED not declared: two sources the recorder stats as read-only -> CONTINUOUS (2 attested); two writable sources marked read-only -> SUBJECT_INDEPENDENCE_CONTRADICTED (2 contradicted)
+   values, MEASURED not reported: two read-only sources the recorder reads itself (a checksum over the bytes) -> CONTINUOUS (2 measured, 3 independence beats); a reported number the bytes refute -> SUBJECT_VALUES_CONTRADICTED (2 contradicted); reach checked, values still the caller's -> SUBJECT_VALUES_REPORTED (2 reported)
    OS power witness: 0 sleep interval(s) in the log
 ```
 
@@ -239,31 +255,34 @@ Exit `0` when every demonstration holds, `1` when one does not, `2` for unusable
   also touching the watched file would read as agreeing. Corroboration raises the cost of a
   forgery -- a second source must be moved consistently -- but it does not *prove*
   independence: the record reports how many sources agree, not that they could not have been
-  moved together, and the choice of sources is still the caller's. Progress and its
-  corroboration are measured, not verified. Independence is now *declared and counted*, and
-  a declaration can be *checked against the filesystem* -- but the check is the recorder's
-  own access, so a subject running as a *different* user is not covered, and as root nothing
-  is: `read_only` is checked only for the recorder's uid. And the check covers *reach*, not
-  *value*: a source the recorder cannot write but whose contents the subject still influences
-  reads as independent. So the strongest word a *declaration* reaches is still
-  `SUBJECT_INDEPENDENCE_UNPROVEN`; `ATTESTED` is earned by an observation the recorder made,
-  not by a promise -- it can withhold credit for independence, never manufacture it.
+  moved together, and the choice of sources is still the caller's. Progress itself is still
+  the subject's own number. But a source's *value* is now measured rather than taken on
+  trust: naming its path makes the recorder read the bytes, so the number is one it read, and
+  a reported number is *checked* against that read. What a measurement still does not do is
+  prove the subject did not author those bytes, and the read is the recorder's own access --
+  so a subject running as a *different* user is not covered, and as root nothing is: the
+  measurement, like `read_only`, is for the recorder's uid. So the strongest word a
+  *declaration* reaches is still `SUBJECT_INDEPENDENCE_UNPROVEN`; `ATTESTED` and `MEASURED`
+  are earned by observations the recorder made, not by a promise -- they can withhold credit
+  for independence, never manufacture it.
 
 ## Next question (the one the build produced)
 
-The vulnerable edge has moved, not closed. Reach is now checkable -- the recorder stats a
-source rather than taking a caller's word -- but the *check* is the recorder's own write
-access, and the *values* are still the caller's. `INDEPENDENCE_ATTESTED` means "two sources
-the recorder could not write agreed", which is stronger than a declaration and still not
-"two sources the subject could not influence". Two gaps remain, and they are the next
-builds, one limitation at a time. First: the check is uid-local, so a subject running as a
-different user, or the recorder running as root, is not covered -- the observation is a
-convenience of the same account, and the record should say so rather than imply more.
-Second, and deeper: the *progress and effect values* are still supplied by the caller, so a
-source the recorder cannot write but whose contents the subject influences reads as
-independent. The next question is whether a *value* can be witnessed on a channel the
-subject cannot write -- a count the recorder reads from a socket the subject never opened,
-a checksum over bytes it did not author -- so that independence is established by the
-value's provenance and not only the file's permissions. The same move once more: the
-strongest claim is the one the record can *falsify* about itself, and independence is still
-the thing no report can simply assert.
+The vulnerable edge has moved again, not closed. Reach is checkable (the recorder stats a
+source) and now the *value* is too (it reads the bytes and checks a reported number against
+the read), but both observations are still the recorder's own access on its own machine.
+`INDEPENDENCE_MEASURED` means "two sources the recorder could not write *and* read itself
+agreed", which is stronger than a declaration and still not "two sources the subject could
+not influence at all": a measured value proves what the bytes *say*, not who *wrote* them,
+and a subject that owns the file the recorder only reads still influences its contents.
+Two gaps remain, and they are the next builds, one limitation at a time. First: the read,
+like the reach check, is uid-local -- a subject running as a different user, or the recorder
+running as root, is not covered, and the record should say so rather than imply more.
+Second, and deeper: the recorder reads bytes the subject *did not author* only by
+convention, not by construction. The next question is whether a value can be witnessed on a
+channel the subject cannot write at all -- a count read from a socket the subject never
+opened, a counter the recorder increments in its own store, a third party's record -- so
+that authorship, and not only reach and reading, is what the independence rests on. The
+same move once more: the strongest claim is the one the record can *falsify* about itself,
+and "the subject could not have produced this value" is still the thing no report can
+simply assert.

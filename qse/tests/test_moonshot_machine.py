@@ -95,6 +95,18 @@ class TheMoonshotMachine(unittest.TestCase):
         self.assertEqual(ind["attested_sources"], ["db_rows", "files"])
         self.assertEqual(ind["contradicted_verdict"], "SUBJECT_INDEPENDENCE_CONTRADICTED")
         self.assertEqual(ind["contradicted_sources"], ["db_rows", "files"])
+        # And the value itself, measured not reported: the recorder reads the bytes, so the
+        # number the advance rests on is a function of the file. Two read-only sources it
+        # both checks and reads reach the strongest kind; a reported number the bytes refute
+        # is caught; and an advance resting on reported values is named, not promoted.
+        val = payload["demo"]["values"]
+        self.assertEqual(val["measured_verdict"], "CONTINUOUS")
+        self.assertEqual(val["measured_sources"], ["db_rows", "files"])
+        self.assertGreaterEqual(val["measured_independence"], 1)
+        self.assertEqual(val["contradicted_verdict"], "SUBJECT_VALUES_CONTRADICTED")
+        self.assertEqual(val["contradicted_values"], ["db_rows", "files"])
+        self.assertEqual(val["reported_verdict"], "SUBJECT_VALUES_REPORTED")
+        self.assertEqual(val["reported_sources"], ["db_rows", "files"])
 
     def test_the_page_names_the_moonshot_and_its_verdict(self):
         out = io.StringIO()
@@ -110,6 +122,8 @@ class TheMoonshotMachine(unittest.TestCase):
         self.assertIn("SUBJECT_UNCORROBORATED", page)
         self.assertIn("SUBJECT_WITNESSES_SPLIT", page)
         self.assertIn("SUBJECT_INDEPENDENCE_UNPROVEN", page)
+        self.assertIn("SUBJECT_VALUES_CONTRADICTED", page)
+        self.assertIn("SUBJECT_VALUES_REPORTED", page)
 
 
 if __name__ == "__main__":  # pragma: no cover
