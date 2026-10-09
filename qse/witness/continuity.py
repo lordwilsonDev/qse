@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -271,11 +272,52 @@ PROVENANCE_KINDS = ("read_only", "causal", "external", "within")
 #: tuple of reasons rather than a boolean so a reader sees *why*, not just *that*.
 BEYOND_REACH = ("read_only", "causal", "external")
 
+#: The next inversion, one level past a declaration: a declaration is a claim, and a claim
+#: can be *checked*. When the caller names a source's path, the recorder stat()s it itself
+#: and records what it can see -- the mode bits and its own write access -- rather than
+#: taking the caller's word. A source the recorder cannot write is beyond the reach of any
+#: process sharing its uid; a source it *can* write cannot be beyond reach however it was
+#: declared, so marking a writable source ``read_only`` no longer buys independence.
+#:
+#: * ``REACH_READ_ONLY`` -- checked: the file exists and the recorder has no write path to
+#:   it (owner write bit clear, or ``os.access(W_OK)`` false).
+#: * ``REACH_WRITABLE`` -- checked: the recorder could write it, so it is within reach.
+#: * ``REACH_UNKNOWN`` -- the path could not be stat()ed; nothing was observed.
+REACH_KINDS = ("REACH_READ_ONLY", "REACH_WRITABLE", "REACH_UNKNOWN")
+
+
+def observe_reach(path: str | os.PathLike[str]) -> str:
+    """What the recorder can *check* about a path's reach, not what a caller claims.
+
+    The observation is deliberately narrow and local: it stats ``path`` and asks whether
+    the recorder itself could write it. A path whose owner write bit is clear, or which
+    ``os.access`` refuses, is ``REACH_READ_ONLY``; one the recorder can write is
+    ``REACH_WRITABLE``; one that cannot be stat()ed is ``REACH_UNKNOWN``. The check is a
+    fact the recorder read from the filesystem, so it defeats a caller that merely
+    *declares* a writable source read-only -- but it is the recorder's own access, so a
+    subject running as a *different* user is not covered, and as root nothing is.
+    """
+    try:
+        info = os.stat(path)
+    except OSError:
+        return "REACH_UNKNOWN"
+    owner_write = bool(stat.S_IMODE(info.st_mode) & stat.S_IWUSR)
+    if owner_write and os.access(path, os.W_OK):
+        return "REACH_WRITABLE"
+    return "REACH_READ_ONLY"
+
+
 #: Whether a claimed advance is backed by witnesses beyond the subject's reach. Distinct
 #: from ``CORROBORATION_KINDS``: agreement is not independence, and this vocabulary is
 #: deliberately weaker -- it can report INDEPENDENT, but the strongest verdict a ledger
 #: reaches when independence is *not* declared is UNPROVEN, never a silent pass.
-INDEPENDENCE_KINDS = ("INDEPENDENCE_INDEPENDENT", "INDEPENDENCE_DECLARED_ONLY",
+#:
+#: ``INDEPENDENCE_ATTESTED`` is the one kind a *check* can reach and a declaration cannot:
+#: two advancing sources the recorder itself observed to be read-only. ``INDEPENDENCE_
+#: CONTRADICTED`` is the inverse -- a source declared beyond reach that the recorder's own
+#: stat() showed it could write, so the declaration is defeated and reported, not believed.
+INDEPENDENCE_KINDS = ("INDEPENDENCE_ATTESTED", "INDEPENDENCE_INDEPENDENT",
+                      "INDEPENDENCE_CONTRADICTED", "INDEPENDENCE_DECLARED_ONLY",
                       "INDEPENDENCE_UNPROVEN", "INDEPENDENCE_NONE")
 
 
@@ -300,6 +342,27 @@ def _source_provenance(previous: Mapping[str, Any], current: Mapping[str, Any],
     return provenance_of(current).get(name) or provenance_of(previous).get(name)
 
 
+def reach_of(record: Mapping[str, Any]) -> dict[str, str]:
+    """The reach the recorder *observed* for each named source, as ``{name: REACH_KIND}``.
+
+    ``provenance_of`` reads what a caller declared; this reads what the recorder checked.
+    Only kinds drawn from ``REACH_KINDS`` are kept, so a malformed observation is ignored
+    rather than believed -- the same rule the record applies to every declaration.
+    """
+    raw = record.get("reach") or {}
+    out: dict[str, str] = {}
+    for name, kind in raw.items():
+        if isinstance(kind, str) and kind in REACH_KINDS:
+            out[str(name)] = kind
+    return out
+
+
+def _source_reach(previous: Mapping[str, Any], current: Mapping[str, Any],
+                  name: str) -> str | None:
+    """A source's observed reach, taken from the later beat that observed one."""
+    return reach_of(current).get(name) or reach_of(previous).get(name)
+
+
 def independence(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dict[str, Any]:
     """Count how many *advancing* sources are declared beyond the subject's reach.
 
@@ -308,11 +371,16 @@ def independence(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dic
     no declaration is credited to none of the reach classes -- the record reports
     independence as unproven rather than silently letting agreement stand in for it.
 
-    * ``INDEPENDENCE_INDEPENDENT`` -- two or more beyond-reach sources advanced.
+    * ``INDEPENDENCE_ATTESTED`` -- two or more advancing sources the recorder itself
+      *checked* read-only: independence observed, not merely sworn.
+    * ``INDEPENDENCE_INDEPENDENT`` -- two or more beyond-reach sources advanced (by
+      declaration only, with no observation to check it).
+    * ``INDEPENDENCE_CONTRADICTED`` -- a source declared beyond reach that the recorder's
+      own stat() showed it could write: the declaration is defeated and reported.
     * ``INDEPENDENCE_UNPROVEN`` -- two or more sources advanced, but fewer than two are
-      declared beyond reach: agreement counted, independence not established.
-    * ``INDEPENDENCE_DECLARED_ONLY`` -- exactly one source advanced and it is declared
-      beyond reach: a real reason, but only one such witness.
+      beyond reach: agreement counted, independence not established.
+    * ``INDEPENDENCE_DECLARED_ONLY`` -- exactly one source advanced and it is beyond
+      reach: a real reason, but only one such witness.
     * ``INDEPENDENCE_NONE`` -- nothing advanced, or the sources contradicted each other.
     """
     before, after = effects_of(previous), effects_of(current)
@@ -321,21 +389,36 @@ def independence(previous: Mapping[str, Any], current: Mapping[str, Any]) -> dic
     advancing = [name for name in common if deltas[name] > 0]
     regressed = [name for name in common if deltas[name] < 0]
     declared = {name: _source_provenance(previous, current, name) for name in common}
-    beyond = [name for name in advancing if declared.get(name) in BEYOND_REACH]
+    checked = {name: _source_reach(previous, current, name) for name in common}
+    # A declaration beyond reach that the recorder's own stat() contradicts -- it can write
+    # the source -- is defeated here: the source is not credited as beyond reach and the
+    # contradiction is reported, because a check outranks a declaration.
+    contradicted = [
+        name for name in advancing
+        if declared.get(name) in BEYOND_REACH and checked.get(name) == "REACH_WRITABLE"
+    ]
+    checked_beyond = [name for name in advancing if checked.get(name) == "REACH_READ_ONLY"]
+    beyond = [name for name in advancing
+              if declared.get(name) in BEYOND_REACH and name not in contradicted]
     within = [name for name in advancing if declared.get(name) == "within"]
     undeclared = [name for name in advancing if declared.get(name) is None]
     if advancing and regressed:
         kind = "INDEPENDENCE_NONE"
+    elif contradicted:
+        kind = "INDEPENDENCE_CONTRADICTED"
+    elif len(checked_beyond) >= 2:
+        kind = "INDEPENDENCE_ATTESTED"
     elif len(beyond) >= 2:
         kind = "INDEPENDENCE_INDEPENDENT"
     elif len(advancing) >= 2:
         kind = "INDEPENDENCE_UNPROVEN"
-    elif beyond:
+    elif beyond or checked_beyond:
         kind = "INDEPENDENCE_DECLARED_ONLY"
     else:
         kind = "INDEPENDENCE_NONE"
     return {"kind": kind, "sources": common, "deltas": deltas, "declared": declared,
-            "advancing": advancing, "regressed": regressed, "beyond": beyond,
+            "checked": checked, "advancing": advancing, "regressed": regressed,
+            "beyond": beyond, "checked_beyond": checked_beyond, "contradicted": contradicted,
             "within": within, "undeclared": undeclared}
 
 #: The fields of a subject identity that must not change across a restart. A pid can be
@@ -378,6 +461,7 @@ def beat(
     effect: float | None = None,
     effects: Mapping[str, Any] | None = None,
     provenance: Mapping[str, Any] | None = None,
+    sources: Mapping[str, str | os.PathLike[str]] | None = None,
     policy: str | None = None,
     interval: float = DEFAULT_INTERVAL,
     note: str = "",
@@ -398,6 +482,11 @@ def beat(
     subject's reach (``PROVENANCE_KINDS``). It is recorded, never proven: ``independence``
     counts the declarations so a reader can tell agreement from independence, and a source
     left undeclared is reported as such rather than quietly credited.
+
+    ``sources`` goes a step further and makes the declaration *checkable*: it maps each
+    named effect source to a path the recorder stats itself, so a ``read_only`` claim can be
+    observed (``REACH_KINDS``, via ``observe_reach``) instead of sworn. A caller that names
+    a writable path and declares it ``read_only`` is caught, not believed.
     """
     if policy is not None and policy not in POLICIES:
         raise ValueError(f"unknown subject policy {policy!r}; choose from {POLICIES}")
@@ -417,6 +506,11 @@ def beat(
             raise ValueError(f"unknown provenance for effect source {name!r}: {kind!r}; "
                              f"choose from {PROVENANCE_KINDS}")
         declared[str(name)] = kind
+    reached: dict[str, str] = {}
+    for name, source in (sources or {}).items():
+        if not isinstance(source, (str, os.PathLike)):
+            raise ValueError(f"source {name!r} must be a path, got {type(source).__name__}")
+        reached[str(name)] = observe_reach(source)
     record = {
         "ev": BEAT,
         "subject": dict(subject) if subject else None,
@@ -424,6 +518,7 @@ def beat(
         "effect": (None if effect is None else float(effect)),
         "effects": named,
         "provenance": declared,
+        "reach": reached,
         "policy": (str(policy) if policy else None),
         "wall": round(float(time.time() if wall is None else wall), 6),
         "mono": round(float(time.monotonic() if mono is None else mono), 6),
@@ -624,8 +719,12 @@ def verify(
         "independence_transitions": [],
         "independence_counts": {},
         "effect_provenance": {},
+        "effect_reach": {},
         "independent_sources": [],
+        "attested_sources": [],
+        "contradicted_sources": [],
         "unproven_independence": [],
+        "contradicted_independence": [],
         "power_sleeps": None,
         "verdict": "EMPTY",
     }
@@ -739,11 +838,25 @@ def verify(
     # that never claimed to know why its sources are out of reach keeps its prior reading
     # rather than being credited or penalised for a declaration it never made.
     prov_map: dict[str, str] = {}
+    reach_map: dict[str, str] = {}
     for b in beats:
         prov_map.update(provenance_of(b))
+        reach_map.update(reach_of(b))
     result["effect_provenance"] = prov_map
+    result["effect_reach"] = reach_map
+    # The check outranks the declaration: a source the recorder observed to be writable is
+    # removed from the beyond-reach set however it was declared, and named as contradicted.
+    contradicted = sorted(
+        name for name, kind in reach_map.items()
+        if kind == "REACH_WRITABLE" and prov_map.get(name) in BEYOND_REACH
+    )
+    attested = sorted(name for name, kind in reach_map.items() if kind == "REACH_READ_ONLY")
+    result["attested_sources"] = attested
+    result["contradicted_sources"] = contradicted
     result["independent_sources"] = sorted(
-        name for name, kind in prov_map.items() if kind in BEYOND_REACH
+        name for name in set(prov_map) | set(reach_map)
+        if name not in contradicted
+        and (reach_map.get(name) == "REACH_READ_ONLY" or prov_map.get(name) in BEYOND_REACH)
     )
     indep_rows = [independence(a, b) for a, b in zip(beats, beats[1:])]
     result["independence_transitions"] = indep_rows
@@ -751,7 +864,7 @@ def verify(
     for row in indep_rows:
         indep_counts[row["kind"]] = indep_counts.get(row["kind"], 0) + 1
     result["independence_counts"] = indep_counts
-    prov_engaged = multi and bool(prov_map)
+    prov_engaged = multi and (bool(prov_map) or bool(reach_map))
 
     # Per interval: did the subject *claim* an advance, was any *observed* source present, and
     # did any of them actually advance? The single effect and the named sources are counted
@@ -873,9 +986,34 @@ def verify(
         {"beats": n,
          "why": f"the subject claimed an advance on {n} consecutive beats (threshold "
                 f"{stall_after}) that {result['effect_sources']} named sources corroborated "
-                f"but only {len(result['independent_sources'])} were declared beyond the "
-                f"subject's reach: agreement is not independence"}
+                f"but no two were shown beyond the subject's reach the same way "
+                f"({len(result['attested_sources'])} checked, "
+                f"{len(result['independent_sources']) - len(result['attested_sources'])} "
+                f"declared only): agreement is not independence"}
         for n in unproven_runs if n >= stall_after
+    ]
+
+    # The inverse finding a *check* makes possible: a source declared beyond reach that the
+    # recorder's own stat() showed it could write. A declaration defeated by an observation
+    # is reported as such rather than quietly discounted -- the whole point of checking.
+    contradicted_runs: list[int] = []
+    run_c = 0
+    for i, row in enumerate(indep_rows):
+        if row["kind"] == "INDEPENDENCE_CONTRADICTED" and declared_advances[i]:
+            run_c += 1
+        else:
+            if run_c:
+                contradicted_runs.append(run_c)
+            run_c = 0
+    if run_c:
+        contradicted_runs.append(run_c)
+    result["contradicted_independence"] = [
+        {"beats": n,
+         "why": f"the subject claimed an advance on {n} consecutive beats (threshold "
+                f"{stall_after}) and a source declared beyond its reach was read by the "
+                f"recorder as writable ({', '.join(result['contradicted_sources'])}): the "
+                f"declaration is defeated by the check"}
+        for n in contradicted_runs if n >= stall_after
     ]
 
     if not beats:
@@ -892,6 +1030,8 @@ def verify(
         result["verdict"] = "SUBJECT_UNSUBSTANTIATED"
     elif result["uncorroborated"]:
         result["verdict"] = "SUBJECT_UNCORROBORATED"
+    elif result["contradicted_independence"]:
+        result["verdict"] = "SUBJECT_INDEPENDENCE_CONTRADICTED"
     elif result["unproven_independence"]:
         result["verdict"] = "SUBJECT_INDEPENDENCE_UNPROVEN"
     elif result["stalls"]:

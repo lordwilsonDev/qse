@@ -315,14 +315,17 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
     # declaration, never proof. The same corroborated ledger reads two ways by provenance.
     def _independence_ledger(name: str, declared: list[float],
                              sources: dict[str, list[float]],
-                             provenance: dict[str, str]) -> str:
+                             provenance: dict[str, str], *,
+                             source_paths: dict[str, Path] | None = None) -> str:
         path = str(directory / name)
         names = list(sources)
         for i in range(len(declared)):
+            passed = ({n: source_paths[n] for n in names if n in source_paths}
+                      if source_paths else None)
             continuity.beat(path, wall=1_000.0 + i * 60.0, mono=i * 60.0, boot=500.0,
                             pid=1, interval=60.0, progress=declared[i],
                             effects={n: sources[n][i] for n in names},
-                            provenance=provenance)
+                            provenance=provenance, sources=passed)
         return path
 
     independent = continuity.verify(
@@ -335,6 +338,27 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
                              {"db_rows": [10, 20, 30, 40], "files": [5, 6, 7, 8]},
                              {"db_rows": "within", "files": "within"}),
         sleeps=[], stall_after=3)
+
+    # The check, one level past the declaration: name each source's PATH and the recorder
+    # stats it itself, so read-only reach is *observed* rather than sworn. Two read-only
+    # files are ATTESTED (independence checked); two writable files marked read_only are
+    # CONTRADICTED -- the exact defeat limitation 1 named, caught by the check, not believed.
+    checked_ro = {n: directory / f"attested_{n}.txt" for n in ("db_rows", "files")}
+    checked_rw = {n: directory / f"contradicted_{n}.txt" for n in ("db_rows", "files")}
+    for handle in checked_ro.values():
+        handle.write_bytes(b"x")
+        handle.chmod(0o444)
+    for handle in checked_rw.values():
+        handle.write_bytes(b"x")
+    attested = continuity.verify(
+        _independence_ledger("attested.jsonl", [1, 2, 3, 4],
+                             {"db_rows": [10, 20, 30, 40], "files": [5, 6, 7, 8]}, {},
+                             source_paths=checked_ro), sleeps=[], stall_after=3)
+    contradicted = continuity.verify(
+        _independence_ledger("contradicted.jsonl", [1, 2, 3, 4],
+                             {"db_rows": [10, 20, 30, 40], "files": [5, 6, 7, 8]},
+                             {"db_rows": "read_only", "files": "read_only"},
+                             source_paths=checked_rw), sleeps=[], stall_after=3)
 
     return {
         "real": {"ledger": real, "verdict": report["verdict"], "beats": report["beats"],
@@ -366,7 +390,11 @@ def _witness_demo(directory: Path) -> dict[str, Any]:
         "independence": {"independent_verdict": independent["verdict"],
                          "independent_sources": independent["independent_sources"],
                          "unproven_verdict": unproven["verdict"],
-                         "unproven_sources": unproven["independent_sources"]},
+                         "unproven_sources": unproven["independent_sources"],
+                         "attested_verdict": attested["verdict"],
+                         "attested_sources": attested["attested_sources"],
+                         "contradicted_verdict": contradicted["verdict"],
+                         "contradicted_sources": contradicted["contradicted_sources"]},
         "absences": continuity.absences(real),
         "power_sleeps_recorded": len(power.load()),
     }
@@ -403,7 +431,11 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
           and demo["independence"]["independent_verdict"] == "CONTINUOUS"
           and len(demo["independence"]["independent_sources"]) == 2
           and demo["independence"]["unproven_verdict"] == "SUBJECT_INDEPENDENCE_UNPROVEN"
-          and demo["independence"]["unproven_sources"] == [])
+          and demo["independence"]["unproven_sources"] == []
+          and demo["independence"]["attested_verdict"] == "CONTINUOUS"
+          and len(demo["independence"]["attested_sources"]) == 2
+          and demo["independence"]["contradicted_verdict"] == "SUBJECT_INDEPENDENCE_CONTRADICTED"
+          and len(demo["independence"]["contradicted_sources"]) == 2)
 
     lines: list[str] = []
     lines.append("MOONSHOT-M  the machine that can attest its own continuity")
@@ -464,8 +496,11 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
     lines.append("   Going one level deeper: agreement is not independence, so each source may")
     lines.append("   DECLARE why it is beyond the subject's reach (read-only / causal / external),")
     lines.append("   and an advance whose agreeing sources are all within reach is reported as")
-    lines.append("   SUBJECT_INDEPENDENCE_UNPROVEN -- the strongest verdict that evidence reaches")
-    lines.append("   when the reason it cannot be forged is merely declared, never proven.")
+    lines.append("   SUBJECT_INDEPENDENCE_UNPROVEN -- the strongest verdict a declaration reaches")
+    lines.append("   when the reason it cannot be forged is merely sworn. But a declaration can be")
+    lines.append("   CHECKED: name a source's path and the recorder stats it itself, so two files")
+    lines.append("   it cannot write are ATTESTED, and a writable file marked read-only is")
+    lines.append("   SUBJECT_INDEPENDENCE_CONTRADICTED -- the check outranks the word.")
     lines.append("")
 
     lines.append("4. THE WITNESS, RUN")
@@ -509,6 +544,10 @@ def receipt(prof: Mapping[str, Any], accepted: list[Any], refused: list[dict[str
     lines.append(f"   independence (agreement is not independence): {len(ind['independent_sources'])} "
                  f"source(s) declared beyond reach -> {ind['independent_verdict']}; the same "
                  f"agreement with every source within reach -> {ind['unproven_verdict']}")
+    lines.append(f"   independence, CHECKED not declared: two sources the recorder stats as "
+                 f"read-only -> {ind['attested_verdict']} ({len(ind['attested_sources'])} "
+                 f"attested); two writable sources marked read-only -> "
+                 f"{ind['contradicted_verdict']} ({len(ind['contradicted_sources'])} contradicted)")
     lines.append("   absences (what did not change):")
     for row in demo["absences"]:
         state = "held steady" if not row["changed"] else "changed"

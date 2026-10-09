@@ -17,12 +17,13 @@ from .support import Workspace, pin_clock
 
 
 def _beat(path, index: int, *, boot: float = 500.0, watches=None, subject=None,
-          progress=None, effect=None, effects=None, provenance=None) -> None:
+          progress=None, effect=None, effects=None, provenance=None,
+          sources=None) -> None:
     """A fully injected heartbeat, so a history can be replayed without waiting."""
     continuity.beat(path, wall=1_000.0 + index * 60.0, mono=index * 60.0,
                     boot=boot, pid=1, interval=60.0, watches=watches or {},
                     subject=subject, progress=progress, effect=effect, effects=effects,
-                    provenance=provenance)
+                    provenance=provenance, sources=sources)
 
 
 class TheBeatLedger(unittest.TestCase):
@@ -451,12 +452,24 @@ class TheIndependenceOfWitnesses(unittest.TestCase):
         self.addCleanup(self.ws.close)
         self.path = self.ws.ledger("w.jsonl")
 
-    def _run(self, declared, sources, provenance, **kw):
+    def _run(self, declared, sources, provenance, *, sources_paths=None, **kw):
         names = list(sources)
         for i, decl in enumerate(declared):
+            passed = ({n: sources_paths[n] for n in names if n in sources_paths}
+                      if sources_paths else None)
             _beat(self.path, i, progress=decl,
-                  effects={n: sources[n][i] for n in names}, provenance=provenance)
+                  effects={n: sources[n][i] for n in names}, provenance=provenance,
+                  sources=passed)
         return continuity.verify(self.path, sleeps=[], **kw)
+
+    def _read_only_files(self, *names):
+        paths = {}
+        for name in names:
+            handle = self.ws.file(name + ".txt")
+            handle.write_text("x", encoding="utf-8")
+            handle.chmod(0o444)
+            paths[name] = handle
+        return paths
 
     def test_two_sources_declared_beyond_reach_are_independent(self):
         report = self._run([1, 2, 3, 4], {"db_rows": [10, 20, 30, 40],
@@ -516,6 +529,62 @@ class TheIndependenceOfWitnesses(unittest.TestCase):
     def test_an_unknown_provenance_is_refused_at_write_time(self):
         with self.assertRaises(ValueError):
             continuity.beat(self.path, wall=1.0, effects={"a": 1}, provenance={"a": "sworn"})
+
+    def test_two_sources_the_recorder_checks_read_only_are_attested(self):
+        # The declaration is not needed: naming the paths lets the recorder stat them
+        # itself, so independence is *observed* rather than sworn.
+        paths = self._read_only_files("db_rows", "files")
+        report = self._run([1, 2, 3, 4], {"db_rows": [10, 20, 30, 40],
+                                          "files": [5, 6, 7, 8]}, {},
+                           sources_paths=paths, stall_after=3)
+        self.assertEqual(report["attested_sources"], ["db_rows", "files"])
+        self.assertEqual(report["independence_counts"], {"INDEPENDENCE_ATTESTED": 3})
+        self.assertEqual(report["verdict"], "CONTINUOUS")
+
+    def test_declaring_a_writable_source_read_only_is_contradicted(self):
+        # The exact defeat limitation 1 named: a caller marks a writable source
+        # read_only. The recorder can write it, so the declaration is defeated by the
+        # check and reported, not believed -- and independence is withheld.
+        paths = {}
+        for name in ("db_rows", "files"):
+            handle = self.ws.file(name + ".txt")
+            handle.write_text("x", encoding="utf-8")
+            paths[name] = handle
+        report = self._run([1, 2, 3, 4], {"db_rows": [10, 20, 30, 40],
+                                          "files": [5, 6, 7, 8]},
+                           {"db_rows": "read_only", "files": "read_only"},
+                           sources_paths=paths, stall_after=3)
+        self.assertEqual(report["attested_sources"], [])
+        self.assertEqual(report["contradicted_sources"], ["db_rows", "files"])
+        self.assertEqual(report["independent_sources"], [])
+        self.assertEqual(report["independence_counts"], {"INDEPENDENCE_CONTRADICTED": 3})
+        self.assertEqual(report["verdict"], "SUBJECT_INDEPENDENCE_CONTRADICTED")
+
+    def test_one_checked_and_one_merely_declared_is_still_unproven(self):
+        # A check only covers the source whose path was named; a declaration without one
+        # is not promoted by the neighbour's check, so independence stays unproven.
+        paths = self._read_only_files("db_rows")
+        report = self._run([1, 2, 3, 4], {"db_rows": [10, 20, 30, 40],
+                                          "files": [5, 6, 7, 8]},
+                           {"files": "read_only"}, sources_paths=paths, stall_after=3)
+        self.assertEqual(report["attested_sources"], ["db_rows"])
+        self.assertEqual(report["independence_counts"], {"INDEPENDENCE_UNPROVEN": 3})
+        self.assertEqual(report["verdict"], "SUBJECT_INDEPENDENCE_UNPROVEN")
+
+    def test_observe_reach_reads_the_filesystem_not_a_claim(self):
+        read_only = self.ws.file("ro.txt")
+        read_only.write_text("x", encoding="utf-8")
+        read_only.chmod(0o444)
+        writable = self.ws.file("rw.txt")
+        writable.write_text("x", encoding="utf-8")
+        self.assertEqual(continuity.observe_reach(read_only), "REACH_READ_ONLY")
+        self.assertEqual(continuity.observe_reach(writable), "REACH_WRITABLE")
+        self.assertEqual(continuity.observe_reach(self.ws.file("missing")), "REACH_UNKNOWN")
+
+    def test_reach_of_ignores_an_unrecognised_observation(self):
+        self.assertEqual(
+            continuity.reach_of({"reach": {"a": "REACH_READ_ONLY", "b": "sworn"}}),
+            {"a": "REACH_READ_ONLY"})
 
 
 class ThePowerLogWitness(unittest.TestCase):

@@ -88,6 +88,13 @@ class TheMoonshotMachine(unittest.TestCase):
         self.assertEqual(ind["independent_sources"], ["db_rows", "files"])
         self.assertEqual(ind["unproven_verdict"], "SUBJECT_INDEPENDENCE_UNPROVEN")
         self.assertEqual(ind["unproven_sources"], [])
+        # And one level past the declaration: a reach the recorder *checks* for itself.
+        # Two read-only sources are attested; a writable source marked read-only is
+        # caught by the check and reported, not believed.
+        self.assertEqual(ind["attested_verdict"], "CONTINUOUS")
+        self.assertEqual(ind["attested_sources"], ["db_rows", "files"])
+        self.assertEqual(ind["contradicted_verdict"], "SUBJECT_INDEPENDENCE_CONTRADICTED")
+        self.assertEqual(ind["contradicted_sources"], ["db_rows", "files"])
 
     def test_the_page_names_the_moonshot_and_its_verdict(self):
         out = io.StringIO()

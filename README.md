@@ -127,8 +127,12 @@ is not independence: each source may **declare why it is beyond the subject's re
 (`read_only` / `causal` / `external` / `within`), and the record counts the agreeing
 sources declared beyond reach -- two or more is independent, two-or-more agreeing with
 fewer than two beyond reach is `SUBJECT_INDEPENDENCE_UNPROVEN`, so the strongest verdict a
-*declaration* can reach is "unproven", never a silent pass. The full inversions and the
-honest limits are in [docs/moonshot-m.md](docs/moonshot-m.md).
+*declaration* can reach is "unproven", never a silent pass. And a declaration can be
+**checked, not just recorded**: name each source's path and the recorder stats it itself,
+so two sources it cannot write are `INDEPENDENCE_ATTESTED` (independence observed) and a
+writable source marked `read_only` is `SUBJECT_INDEPENDENCE_CONTRADICTED` -- the check
+outranks the word. The full inversions and the honest limits are in
+[docs/moonshot-m.md](docs/moonshot-m.md).
 
 ## MOONSHOT-C — the same test on a cloud bill, in one script
 
@@ -289,7 +293,7 @@ cd ~/projects/qse
 python3 -B -W error::ResourceWarning -m unittest discover -s qse/tests -t .
 ```
 
-414 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
+419 tests. `-t .` matters (it puts the repository root on `sys.path` so `import qse`
 resolves) and so does `-B` (bytecode caches left in the tree are noise).
 
 ## The seven slots
